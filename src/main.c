@@ -1,36 +1,28 @@
 #include "dsm.h"
 
-unsigned int actions[36] = {
-    SPEED_UP, SPEED_UP, SPEED_UP, SPEED_UP, SPEED_UP, SPEED_UP,
-    SPEED_DOWN, SPEED_DOWN, SPEED_DOWN, SPEED_DOWN, SPEED_DOWN, SPEED_DOWN,
-    LEFT, LEFT, LEFT, LEFT, LEFT, LEFT,
-    RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT,
-    BLADE_UP, BLADE_UP, BLADE_UP, BLADE_UP, BLADE_UP, BLADE_UP, 
-    BLADE_DOWN, BLADE_DOWN, BLADE_DOWN, BLADE_DOWN, BLADE_DOWN, BLADE_DOWN
-};
-
-
 int main() {
-    int width = 500;
-    int height = 500;
-    int num_agents = 1;
-    int horizon = 1024;
-    float agent_speed = 1;
-    int vision = 5;
-    bool discretize = true;
+    // Simulation parameters
+    const int width = 256;
+    const int height = 256;
+    const int num_agents = 1;
+    const int horizon = 1024;
+    const float agent_speed = 1;
+    const int vision = 5;
+    const bool discretize = true;
 
-    int render_cell_size = 4;
-    int seed = 42;
+    const int render_cell_size = 4;
+    const int seed = 42;
 
+    // Initialize environment
     Env* env = alloc_room_env();
     reset_room(env);
  
+    // Initialize Raylib renderer
     Renderer* renderer = init_renderer(render_cell_size, width, height);
-    // Renderer* renderer_debug = init_renderer(render_cell_size, width, height);
 
-    int t = 0;
+    // Main simulation loop
     while (!WindowShouldClose()) {
-        // User can take control of the first agent
+        // User Input Handling: Map keys to environment actions
         env->action = PASS;
         if (IsKeyDown(KEY_W)) env->action = SPEED_UP;
         if (IsKeyDown(KEY_S)) env->action = SPEED_DOWN;
@@ -43,16 +35,17 @@ int main() {
         if (IsKeyDown(KEY_SPACE)) env->action = CONTINUE;
         if (IsKeyDown(KEY_R)) reset_room(env);
 
-
-        bool done = step(env);
-        if (done) {
+        // Step the simulation
+        if (step(env)) {
             printf("Done\n");
             reset_room(env);
         }
-        render_global(renderer, env);
-        // render_debug(renderer_debug, env);
 
+        // Render the current state
+        render_global(renderer, env);
     }
+
+    // Cleanup resources
     close_renderer(renderer);
     free_allocated_grid(env);
     return 0;
