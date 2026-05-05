@@ -1,0 +1,1 @@
+gcc -Wall -O2 -DBENCHMARK -o benchmark sim.c -lm && ./benchmark

@@ -1,0 +1,1 @@
+gcc -Wall -O2 -o sim sim.c -lm && ./sim
