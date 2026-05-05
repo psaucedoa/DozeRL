@@ -8,13 +8,13 @@
 #define CELL_SIZE 0.1f 
 
 #define SWELL_RATIO 1.2f
-#define LOOSE_SOIL_DENSITY 1300.0f 
+#define LOOSE_SOIL_DENSITY 1300.0f
 #define GRAVITY 9.81f
 
 // Global Soil Properties
-float env_c = 1000.0f;     
+float env_c = 100.0f;      // Reduced from 1000.0f for more realistic loose soil
 float env_c_a = 500.0f;    
-float env_phi = 30.0f * (PI / 180.0f); 
+float env_phi = 30.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f (typical sand)
 float env_delta = 20.0f * (PI / 180.0f); 
 float env_gamma = 1500.0f * GRAVITY; 
 
@@ -104,21 +104,21 @@ void init_grid() {
     }
 
     // 3. Add an ASYMMETRIC berm on the right side to test yaw forces
-    // float berm_x = 4.0f;
-    // float berm_height = 0.75f; 
-    // float berm_width = 2.0f;  
+    float berm_x = 4.0f;
+    float berm_height = 0.5f; 
+    float berm_width = 3.5f;  
     
-    // for (int i = 0; i < GRID_SIZE; i++) {
-    //     float x_m = i * CELL_SIZE;
-    //     float dist = fabsf(x_m - berm_x);
-    //     if (dist < berm_width / 2.0f) {
-    //         float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
-    //         // ONLY ADD TO RIGHT HALF OF THE MAP (j >= center)
-    //         for (int j = 0; j < GRID_SIZE/2.0f - 5; j++) {
-    //             grid_H[i][j] += h_add;
-    //         }
-    //     }
-    // }
+    for (int i = 0; i < GRID_SIZE; i++) {
+        float x_m = i * CELL_SIZE;
+        float dist = fabsf(x_m - berm_x);
+        if (dist < berm_width / 2.0f) {
+            float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
+            // ONLY ADD TO RIGHT HALF OF THE MAP (j >= center)
+            for (int j = 0; j < GRID_SIZE; j++) {
+                grid_H[i][j] += h_add;
+            }
+        }
+    }
 }
 
 float calculate_FEE_column(Blade* blade, float depth, float width) {
@@ -160,8 +160,6 @@ void simulate_erosion(Blade* blade) {
         
         int dx[] = {1, -1, 0, 0};
         int dy[] = {0, 0, 1, -1};
-        float max_slope = tanf(env_phi);
-        float max_dH = CELL_SIZE * max_slope;
         float loader_length = 2.0f;
 
         for (int i = min_i; i <= max_i; i++) {
@@ -189,13 +187,31 @@ void simulate_erosion(Blade* blade) {
                         float neighbor_total_h = grid_H[ni][nj] + grid_L[ni][nj];
                         float dH = total_h - neighbor_total_h;
                         
-                        if (dH > max_dH) {
-                            float slip = (dH - max_dH) / 2.0f;
-                            slip *= 0.4f; 
-                            if (slip > tempL[i][j]) slip = tempL[i][j]; 
-                            tempL[i][j] -= slip;
-                            tempL[ni][nj] += slip;
-                            total_h -= slip; 
+                        if (dH > 0.0f) {
+                            float alpha = atan2f(dH, CELL_SIZE);
+                            float W = grid_L[i][j] * CELL_SIZE * CELL_SIZE * LOOSE_SOIL_DENSITY * GRAVITY;
+                            
+                            if (W > 1e-4f) {
+                                // Dimensional fix: c * Area_slip, where Area_slip = CELL_SIZE^2 / cos(alpha)
+                                float area_slip = (CELL_SIZE * CELL_SIZE) / cosf(alpha);
+                                float F_s = (env_c * area_slip + W * cosf(alpha) * tanf(env_phi)) / (W * sinf(alpha));
+                                
+                                if (F_s < 1.0f) {
+                                    // Approximate the target dH where F_s = 1
+                                    float target_dH = CELL_SIZE * (env_c * area_slip + W * cosf(alpha) * tanf(env_phi)) / W;
+                                    float min_target_dH = CELL_SIZE * tanf(env_phi);
+                                    if (target_dH < min_target_dH) target_dH = min_target_dH;
+
+                                    if (dH > target_dH) {
+                                        float slip = (dH - target_dH) / 2.0f;
+                                        slip *= 0.4f; 
+                                        if (slip > tempL[i][j]) slip = tempL[i][j]; 
+                                        tempL[i][j] -= slip;
+                                        tempL[ni][nj] += slip;
+                                        total_h -= slip; 
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -224,45 +240,85 @@ void update_kinematics(Blade* blade) {
     float cos_y = cosf(blade->yaw);
     float sin_y = sinf(blade->yaw);
     
-    // 4 Sampling corners rotated by yaw
     float hL = track_length / 2.0f;
     float hW = track_gauge / 2.0f;
     
-    float fl_x = blade->loader_x + hL * cos_y - hW * sin_y;
-    float fl_lat = loader_lat + hL * sin_y + hW * cos_y;
+    int num_samples = 21; // Sample every ~0.1m along 2.0m track
+    float sum_z_left = 0.0f;
+    float sum_z_right = 0.0f;
+    float sum_xz_left = 0.0f;
+    float sum_xz_right = 0.0f;
+    float sum_x2 = 0.0f;
+
+    for (int i = 0; i < num_samples; i++) {
+        // Local x goes from -hL to +hL (rear to front)
+        float local_x = -hL + (track_length * i) / (num_samples - 1);
+        sum_x2 += local_x * local_x;
+        
+        // Left track point
+        float l_x = blade->loader_x + local_x * cos_y - hW * sin_y;
+        float l_lat = loader_lat + local_x * sin_y + hW * cos_y;
+        
+        // Right track point
+        float r_x = blade->loader_x + local_x * cos_y + hW * sin_y;
+        float r_lat = loader_lat + local_x * sin_y - hW * cos_y;
+        
+        float z_L = 1.0f; // Default height
+        float z_R = 1.0f;
+        
+
+        float compaction_rate = 0.15f; // Tracks compress 15% of loose soil per sample pass
+
+        // Left track sampling and compaction
+        int ix_L = (int)(l_x / CELL_SIZE); 
+        int iy_L = (int)(l_lat / CELL_SIZE);
+        if (ix_L >= 0 && ix_L < GRID_SIZE && iy_L >= 0 && iy_L < GRID_SIZE) {
+            if (grid_L[ix_L][iy_L] > 0.001f) {
+                float compacted_amount = grid_L[ix_L][iy_L] * compaction_rate;
+                grid_L[ix_L][iy_L] -= compacted_amount;
+                // Revert the swell ratio when moving back to compacted state
+                grid_H[ix_L][iy_L] += compacted_amount / SWELL_RATIO; 
+            }
+            z_L = grid_H[ix_L][iy_L] + grid_L[ix_L][iy_L];
+        }
+
+        // Right track sampling and compaction
+        int ix_R = (int)(r_x / CELL_SIZE); 
+        int iy_R = (int)(r_lat / CELL_SIZE);
+        if (ix_R >= 0 && ix_R < GRID_SIZE && iy_R >= 0 && iy_R < GRID_SIZE) {
+            if (grid_L[ix_R][iy_R] > 0.001f) {
+                float compacted_amount = grid_L[ix_R][iy_R] * compaction_rate;
+                grid_L[ix_R][iy_R] -= compacted_amount;
+                // Revert the swell ratio when moving back to compacted state
+                grid_H[ix_R][iy_R] += compacted_amount / SWELL_RATIO;
+            }
+            z_R = grid_H[ix_R][iy_R] + grid_L[ix_R][iy_R];
+        }
+        
+        sum_z_left += z_L;
+        sum_z_right += z_R;
+        sum_xz_left += local_x * z_L;
+        sum_xz_right += local_x * z_R;
+    }
     
-    float fr_x = blade->loader_x + hL * cos_y + hW * sin_y;
-    float fr_lat = loader_lat + hL * sin_y - hW * cos_y;
+    float avg_z_left = sum_z_left / num_samples;
+    float avg_z_right = sum_z_right / num_samples;
     
-    float rl_x = blade->loader_x - hL * cos_y - hW * sin_y;
-    float rl_lat = loader_lat - hL * sin_y + hW * cos_y;
+    // Z is the average of both track averages
+    blade->loader_z = (avg_z_left + avg_z_right) / 2.0f;
     
-    float rr_x = blade->loader_x - hL * cos_y + hW * sin_y;
-    float rr_lat = loader_lat - hL * sin_y - hW * cos_y;
+    // Linear regression for pitch: slope = sum(x*z) / sum(x^2)
+    // Avoid division by zero (though sum_x2 is > 0 for num_samples > 1)
+    if (sum_x2 > 0.0001f) {
+        float pitch_left = atan2f(sum_xz_left / sum_x2, 1.0f);
+        float pitch_right = atan2f(sum_xz_right / sum_x2, 1.0f);
+        blade->pitch = (pitch_left + pitch_right) / 2.0f;
+    } else {
+        blade->pitch = 0.0f;
+    }
     
-    float z_FL = 1.0f, z_FR = 1.0f, z_RL = 1.0f, z_RR = 1.0f;
-    
-    int ix, iy;
-    ix = (int)(fl_x / CELL_SIZE); iy = (int)(fl_lat / CELL_SIZE);
-    if(ix>=0 && ix<GRID_SIZE && iy>=0 && iy<GRID_SIZE) z_FL = grid_H[ix][iy] + grid_L[ix][iy];
-    
-    ix = (int)(fr_x / CELL_SIZE); iy = (int)(fr_lat / CELL_SIZE);
-    if(ix>=0 && ix<GRID_SIZE && iy>=0 && iy<GRID_SIZE) z_FR = grid_H[ix][iy] + grid_L[ix][iy];
-    
-    ix = (int)(rl_x / CELL_SIZE); iy = (int)(rl_lat / CELL_SIZE);
-    if(ix>=0 && ix<GRID_SIZE && iy>=0 && iy<GRID_SIZE) z_RL = grid_H[ix][iy] + grid_L[ix][iy];
-    
-    ix = (int)(rr_x / CELL_SIZE); iy = (int)(rr_lat / CELL_SIZE);
-    if(ix>=0 && ix<GRID_SIZE && iy>=0 && iy<GRID_SIZE) z_RR = grid_H[ix][iy] + grid_L[ix][iy];
-    
-    float z_front = (z_FL + z_FR) / 2.0f;
-    float z_rear = (z_RL + z_RR) / 2.0f;
-    float z_left = (z_FL + z_RL) / 2.0f;
-    float z_right = (z_FR + z_RR) / 2.0f;
-    
-    blade->loader_z = (z_front + z_rear) / 2.0f;
-    blade->pitch = atan2f(z_front - z_rear, track_length);
-    blade->roll = atan2f(z_left - z_right, track_gauge);
+    // Roll is difference between average left and right heights over the track gauge
+    blade->roll = atan2f(avg_z_left - avg_z_right, track_gauge);
     
     blade->y = blade->loader_z + blade_offset_x * sinf(blade->pitch) - target_cut_depth;
 }
@@ -273,7 +329,7 @@ void simulate_step(Blade* blade, float dt) {
     float prev_lat = blade->lat_pos;
 
     // Track Slip Dynamics
-    float max_traction = 40000.0f; 
+    float max_traction = 30000.0f; 
     float slip_ratio = blade->last_force / max_traction;
     if (slip_ratio < 0.0f) slip_ratio = 0.0f;
     if (slip_ratio > 1.0f) slip_ratio = 1.0f; 
@@ -468,7 +524,7 @@ int main() {
     for (int t = 0; t < 1000; t++) {
         // Let's oscillate the blade roll command dynamically to test it!
         // blade.blade_roll_rel = sinf(t * 0.05f) * 0.1f;
-        blade.blade_roll_rel = 0.1f;
+        // blade.blade_roll_rel = 0.1f;
         simulate_step(&blade, dt);
     }
     
