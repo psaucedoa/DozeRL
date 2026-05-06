@@ -36,11 +36,13 @@ def main():
         rr.set_time("step_index", sequence=step)
         
         # Log Heightmap as a 3D Mesh
-        min_z, max_z = grid_data.min(), grid_data.max()
-        z_range = max_z - min_z if max_z > min_z else 1.0
+        # Use a fixed range for consistent coloring across frames
+        FIXED_MIN_Z = 0.5
+        FIXED_MAX_Z = 2.0
+        z_range = FIXED_MAX_Z - FIXED_MIN_Z
         
-        # Normalize heights for coloring
-        t = (grid_data - min_z) / z_range
+        # Normalize heights for coloring, clipped to the fixed range
+        t = np.clip((grid_data - FIXED_MIN_Z) / z_range, 0.0, 1.0)
         r = (t * 255).astype(np.uint8)
         g = ((1.0 - np.abs(2.0*t - 1.0)) * 50).astype(np.uint8)
         b = ((1.0 - t) * 255).astype(np.uint8)
@@ -72,8 +74,8 @@ def main():
         # Machine dimensions
         loader_length = 2.0
         loader_width = 1.5
-        loader_height = 1.0
-        blade_height = 0.5
+        loader_height = 2.0
+        blade_height = 1.0
         blade_thickness = 0.2
         
         # Chassis transform: translate by loader_x/lat_pos, rotate by yaw, pitch, roll
@@ -94,7 +96,7 @@ def main():
         
         # Blade is attached to the machine, positioned in front
         blade_local_x = 1.5
-        blade_local_z = -loader_height / 2.0 - 0.2 + blade_height / 2.0
+        blade_local_z = -loader_height / 2.0 + blade_height / 2.0
         
         # Apply blade roll relative to chassis (rotation around X axis)
         rot_blade = R.from_euler('X', [blade_roll_rel], degrees=False).as_quat()
