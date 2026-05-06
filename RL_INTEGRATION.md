@@ -30,7 +30,7 @@ For an agent to learn, it needs a "window" into the world.
 ### Proprioceptive Observations (Vector)
 *   **Machine Attitude:** Pitch, Roll, Yaw rate.
 *   **Actuator States:** Current arm height, blade pitch, and blade roll.
-*   **Force Feedback:** `last_force` (normalized) and `last_yaw_moment`.
+*   **No Force Feedback:** In real operation, the vehicle won't know soil properties ahead of time.
 *   **Surcharge:** `surcharge_Q` (normalized).
 
 ### Spatial Observations (Heightmap Image)

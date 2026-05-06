@@ -12,7 +12,7 @@
 #define GRAVITY 9.81f
 
 // Global Soil Properties
-float env_c = 100.0f;      // Reduced from 1000.0f for more realistic loose soil
+float env_c = 200.0f;      // Reduced from 1000.0f for more realistic loose soil
 float env_c_a = 500.0f;    
 float env_phi = 30.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f (typical sand)
 float env_delta = 20.0f * (PI / 180.0f); 
@@ -36,6 +36,12 @@ typedef struct {
     float pitch;
     float roll;
     float yaw;
+    
+    // Actuators (Action Space)
+    float v_linear;
+    float v_rotational;
+    float arm_height;
+    float blade_pitch_rel;
     float blade_roll_rel; // Operator command: blade roll relative to chassis
     
     float loader_x;
@@ -85,15 +91,15 @@ void env_reset(SoilEnv* env, int seed) {
     // 1. Initial multi-scale random noise
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            float fine = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
-            float coarse = ((float)rand() / RAND_MAX - 0.5f) * 0.4f;
+            float fine = ((float)rand() / RAND_MAX - 0.5f) * 0.2f;
+            float coarse = ((float)rand() / RAND_MAX - 0.5f) * 0.6f;
             env->grid_H[i][j] = 1.0f + fine + coarse;
             env->grid_L[i][j] = 0.0f;
         }
     }
 
     // 2. Multi-pass smoothing
-    for (int iter = 0; iter < 3; iter++) {
+    for (int iter = 0; iter < 2; iter++) {
         float smoothed[GRID_SIZE][GRID_SIZE];
         for (int i = 0; i < GRID_SIZE; i++) {
             for (int j = 0; j < GRID_SIZE; j++) {
@@ -116,17 +122,33 @@ void env_reset(SoilEnv* env, int seed) {
         }
     }
 
-    // 3. Add a berm
-    float berm_y = 8.0f;
+    // 3. Add a berm y
+    // float berm_y = 8.0f;
+    // float berm_height = 0.6f; 
+    // float berm_width = 3.9f;  
+    
+    // for (int j = 0; j < GRID_SIZE; j++) {
+    //     float x_m = j * CELL_SIZE;
+    //     float dist = fabsf(x_m - berm_y);
+    //     if (dist < berm_width / 2.0f) {
+    //         float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
+    //         for (int i = 0; i < GRID_SIZE; i++) {
+    //             env->grid_H[i][j] += h_add;
+    //         }
+    //     }
+    // }
+
+    // 3. Add a berm x
+    float berm_x = 8.0f;
     float berm_height = 0.6f; 
     float berm_width = 3.9f;  
     
-    for (int j = 0; j < GRID_SIZE; j++) {
-        float x_m = j * CELL_SIZE;
-        float dist = fabsf(x_m - berm_y);
+    for (int i = 0; i < GRID_SIZE; i++) {
+        float x_m = i * CELL_SIZE;
+        float dist = fabsf(x_m - berm_x);
         if (dist < berm_width / 2.0f) {
             float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
-            for (int i = 0; i < GRID_SIZE; i++) {
+            for (int j = 0; j < GRID_SIZE; j++) {
                 env->grid_H[i][j] += h_add;
             }
         }
@@ -136,13 +158,19 @@ void env_reset(SoilEnv* env, int seed) {
     env->blade.x = 0.0f;
     env->blade.y = 0.8f;
     env->blade.lat_pos = 10.0f;
-    env->blade.width = 3.0f;
+    env->blade.width = 2.2f;
     env->blade.rake_angle = 45.0f * (PI / 180.0f);
     env->blade.surcharge_Q = 0.0f;
     env->blade.pitch = 0.0f;
     env->blade.roll = 0.0f;
     env->blade.yaw = 0.0f;
+    
+    env->blade.v_linear = 1.0f;
+    env->blade.v_rotational = 0.0f;
+    env->blade.arm_height = 0.15f;
+    env->blade.blade_pitch_rel = 0.0f;
     env->blade.blade_roll_rel = 0.0f;
+    
     env->blade.loader_x = 0.0f;
     env->blade.loader_z = 0.0f;
     env->blade.last_force = 0.0f;
@@ -260,10 +288,9 @@ void simulate_erosion(SoilEnv* env) {
 // Vehicle Kinematics Model with Yaw and Lat Pos
 void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
-    float track_length = 2.0f;
-    float track_gauge = 1.5f;
-    float blade_offset_x = 1.5f; 
-    float target_cut_depth = -0.05f; 
+    float track_length = 2.5f;
+    float track_gauge = 1.8f;
+    float blade_offset_x = 2.0f; 
 
     // Chassis center (behind the blade)
     blade->loader_x = blade->x - blade_offset_x * cosf(blade->yaw);
@@ -275,7 +302,7 @@ void update_kinematics(SoilEnv* env) {
     float hL = track_length / 2.0f;
     float hW = track_gauge / 2.0f;
     
-    int num_samples = 21; // Sample every ~0.1m along 2.0m track
+    int num_samples = 11; // Sample every ~0.1m along 2.0m track
     float sum_z_left = 0.0f;
     float sum_z_right = 0.0f;
     float sum_xz_left = 0.0f;
@@ -352,14 +379,19 @@ void update_kinematics(SoilEnv* env) {
     // Roll is difference between average left and right heights over the track gauge
     blade->roll = atan2f(avg_z_left - avg_z_right, track_gauge);
     
-    blade->y = blade->loader_z + blade_offset_x * sinf(blade->pitch) - target_cut_depth;
+    // Blade origin (y is Z-axis global height of blade center hinge)
+    blade->y = blade->loader_z + blade_offset_x * sinf(blade->pitch) + blade->arm_height;
 }
 
 void simulate_step(SoilEnv* env, float dt) {
     Blade* blade = &env->blade;
     float prev_x = blade->x;
     float prev_y = blade->y; 
-    float prev_lat = blade->lat_pos;
+
+    // Apply dynamic pitch to rake angle
+    float base_rake_angle = 45.0f * (PI / 180.0f);
+    blade->rake_angle = base_rake_angle + blade->blade_pitch_rel + blade->pitch;
+    precompute_FEE(blade->rake_angle, 0.0f);
 
     // Track Slip Dynamics
     float max_traction = 30000.0f; 
@@ -367,13 +399,14 @@ void simulate_step(SoilEnv* env, float dt) {
     if (slip_ratio < 0.0f) slip_ratio = 0.0f;
     if (slip_ratio > 1.0f) slip_ratio = 1.0f; 
     
-    float v_cmd = 1.0f; 
-    float v_actual = v_cmd * (1.0f - slip_ratio);
+    float v_actual = blade->v_linear * (1.0f - slip_ratio);
 
     // Yaw Drift Dynamics
     // Last yaw moment twists the machine. Tracks have high friction (stiffness).
     float yaw_stiffness = 50000.0f; // Nm/rad roughly
     blade->yaw -= (blade->last_yaw_moment / yaw_stiffness) * dt;
+    // Add commanded rotation
+    blade->yaw += blade->v_rotational * dt;
 
     // Move Forward in 2D
     blade->x += v_actual * cosf(blade->yaw) * dt; 
@@ -504,13 +537,14 @@ void simulate_step(SoilEnv* env, float dt) {
     if (outfile) {
         struct {
             int step;
-            float bx, by, bw, pitch, roll, lx, lz, lat, yaw, blade_roll_rel;
+            float bx, by, bw, pitch, roll, lx, lz, lat, yaw, blade_roll_rel, arm_height, blade_pitch_rel;
             int grid_size;
             float cell_size;
         } header = {
             env->step_num, blade->x, blade->y, blade->width, 
             blade->pitch, blade->roll, blade->loader_x, blade->loader_z,
             blade->lat_pos, blade->yaw, blade->blade_roll_rel,
+            blade->arm_height, blade->blade_pitch_rel,
             GRID_SIZE, CELL_SIZE
         };
         
@@ -552,8 +586,23 @@ int main() {
     printf("Benchmarking RL-Optimized Sim: %d steps in %.4f seconds (%.2f Hz)\n", steps, elapsed, steps / elapsed);
 #else
     printf("Starting 6DOF 3D Soil Simulation for RL...\n");
-    float dt = 0.02f; 
-    for (int t = 0; t < 1000; t++) {
+    float dt = 0.01f; 
+    
+    // Simulate some movement and actuation
+    for (int t = 0; t < 2000; t++) {
+        // Change actions periodically to test them out
+        if (t > 400 && t < 800) {
+            env->blade.arm_height = 0.05f; // Drop arm
+        } else if (t >= 800 && t < 1000) {
+            env->blade.arm_height = 0.15f;
+        } else if (t >= 1000 && t < 1200) {
+            env->blade.arm_height = 0.10f; 
+        } else if (t >= 1200) {
+            env->blade.arm_height = 0.15f; 
+            env->blade.v_rotational = 0.0f;
+            env->blade.blade_pitch_rel = 0.2f; // Pitch up
+        }
+        
         simulate_step(env, dt);
     }
     
