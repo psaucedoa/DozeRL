@@ -3,11 +3,39 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 import struct
 
+def get_terrain_color(t):
+    """
+    Perceptually rich colormap (Turbo-like) to make slight elevation 
+    differences stand out across the full spectrum.
+    """
+    # Multi-stop linear interpolation for a vibrant palette:
+    # Deep Blue -> Cyan -> Green -> Yellow -> Red
+    stops = np.array([
+        [0.0, 0.0, 0.5],  # Deep Blue
+        [0.0, 0.5, 1.0],  # Cyan
+        [0.0, 0.8, 0.0],  # Green
+        [1.0, 1.0, 0.0],  # Yellow
+        [1.0, 0.0, 0.0]   # Red
+    ])
+    
+    n_stops = len(stops)
+    t = np.clip(t, 0.0, 1.0)
+    
+    # Calculate stop indices
+    idx = t * (n_stops - 1)
+    low_idx = np.floor(idx).astype(int)
+    high_idx = np.ceil(idx).astype(int)
+    frac = idx - low_idx
+    
+    # Interpolate
+    colors = (1 - frac[..., None]) * stops[low_idx] + frac[..., None] * stops[high_idx]
+    return colors
+
 def main():
     rr.init("SoilSim", spawn=True)
     
-    # Binary Header Format: int, 10 floats, 1 int, 1 float
-    header_format = "i10fif"
+    # Binary Header Format: int, 12 floats, 1 int, 1 float
+    header_format = "i12fif"
     header_size = struct.calcsize(header_format)
     
     try:
@@ -25,35 +53,53 @@ def main():
             
         header = struct.unpack(header_format, header_data)
         step = header[0]
-        bx, by, bwidth, pitch, roll, loader_x, loader_z, lat_pos, yaw, blade_roll_rel = header[1:11]
-        grid_size = header[11]
-        cell_size = header[12]
+        bx, by, bwidth, pitch, roll, loader_x, loader_z, lat_pos, yaw, blade_roll_rel, arm_height, blade_pitch_rel = header[1:13]
+        grid_size = header[13]
+        cell_size = header[14]
         
         # Read the grid of floats
         grid_bytes = f.read(grid_size * grid_size * 4)
+        if not grid_bytes:
+            break
         grid_data = np.frombuffer(grid_bytes, dtype=np.float32).reshape(grid_size, grid_size)
         
         rr.set_time("step_index", sequence=step)
         
-        # Log Heightmap as a 3D Mesh
-        # Use a fixed range for consistent coloring across frames
+        # 1. Calculate Hillshading (Shaded Relief)
+        # This is the most effective way to see small height variations
+        dzdy, dzdx = np.gradient(grid_data, cell_size)
+        
+        # Light source from the top-left (machine start area)
+        light_dir = np.array([-1.0, -1.0, 1.5]) 
+        light_dir /= np.linalg.norm(light_dir)
+        
+        # Surface normals
+        mag = np.sqrt(dzdx**2 + dzdy**2 + 1.0)
+        nx, ny, nz = -dzdx/mag, -dzdy/mag, 1.0/mag
+        
+        # Lambertian shading + Ambient
+        shade = (nx * light_dir[0] + ny * light_dir[1] + nz * light_dir[2])
+        shade = np.clip(shade, 0.0, 1.0)
+        shade = 0.3 + 0.7 * shade # 30% ambient light
+        
+        # 2. Enhanced Colormapping
         FIXED_MIN_Z = 0.5
         FIXED_MAX_Z = 2.0
         z_range = FIXED_MAX_Z - FIXED_MIN_Z
-        
-        # Normalize heights for coloring, clipped to the fixed range
         t = np.clip((grid_data - FIXED_MIN_Z) / z_range, 0.0, 1.0)
-        r = (t * 255).astype(np.uint8)
-        g = ((1.0 - np.abs(2.0*t - 1.0)) * 50).astype(np.uint8)
-        b = ((1.0 - t) * 255).astype(np.uint8)
-        vertex_colors = np.stack([r, g, b], axis=-1).reshape(-1, 3)
+        
+        base_colors = get_terrain_color(t)
+        
+        # Apply hillshade to colors
+        final_colors = (base_colors * shade[..., None] * 255).astype(np.uint8)
+        vertex_colors = final_colors.reshape(-1, 3)
         
         # Create vertices
         x, y = np.meshgrid(np.arange(grid_size) * cell_size, np.arange(grid_size) * cell_size, indexing='ij')
         vertices = np.stack([x, y, grid_data], axis=-1).reshape(-1, 3)
         
-        # Create triangle indices
-        if step == 0 or step == -1:
+        # Create triangle indices (only once)
+        if step == 0 or 'triangles' not in locals():
             indices = []
             for i in range(grid_size - 1):
                 for j in range(grid_size - 1):
@@ -72,16 +118,12 @@ def main():
         ))
         
         # Machine dimensions
-        loader_length = 2.0
-        loader_width = 1.5
-        loader_height = 2.0
+        loader_length = 2.5
+        loader_width = 1.8
+        loader_height = 2.5
         blade_height = 1.0
         blade_thickness = 0.2
         
-        # Chassis transform: translate by loader_x/lat_pos, rotate by yaw, pitch, roll
-        # Note: Scipy from_euler applies rotations. The order 'xyz' implies roll, pitch, yaw
-        # Rerun uses right-handed coordinates: +X Forward, +Y Left (or Right depending on setup), +Z Up.
-        # Yaw is around Z. Pitch is around Y. Roll is around X.
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         
         rr.log("world/machine", rr.Transform3D(
@@ -91,15 +133,15 @@ def main():
         
         rr.log("world/machine/chassis", rr.Boxes3D(
             half_sizes=[[loader_length / 2.0, loader_width / 2.0, loader_height / 2.0]],
-            colors=[[50, 100, 255]]
+            colors=[[200, 200, 200]] # Greyscale machine to pop against colored terrain
         ))
         
         # Blade is attached to the machine, positioned in front
-        blade_local_x = 1.5
-        blade_local_z = -loader_height / 2.0 + blade_height / 2.0
+        blade_local_x = 2.0
+        blade_local_z = arm_height - loader_height / 2.0 + blade_height / 2.0
         
-        # Apply blade roll relative to chassis (rotation around X axis)
-        rot_blade = R.from_euler('X', [blade_roll_rel], degrees=False).as_quat()
+        # Apply blade roll and pitch relative to chassis
+        rot_blade = R.from_euler('YX', [-blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
 
         rr.log("world/machine/blade_hinge", rr.Transform3D(
             translation=[blade_local_x, 0, blade_local_z],
