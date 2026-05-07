@@ -1,1 +1,1 @@
-gcc -Wall -O2 -o sim src/sim.c -lm && ./out/sim
+gcc -Wall -O2 -o out/sim src/sim.c -lm && ./out/sim

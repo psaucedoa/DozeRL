@@ -768,7 +768,7 @@ void simulate_step(SoilEnv* env, float dt) {
 
 int main() {
 #ifndef BENCHMARK
-    outfile = fopen("sim_out.bin", "wb");
+    outfile = fopen("out/sim_out.bin", "wb");
     if (!outfile) return 1;
 #endif
 
