@@ -43,3 +43,4 @@ Soil properties $\Theta_u = [c, \phi, c_a, \delta, \gamma]$ are intended to be u
 Rerun is used for 3D visualization. 
 *   **Elevation Mapping:** Terrain is colored based on a fixed elevation range (0.5m to 2.0m) to ensure visual consistency during replay.
 *   **Machine State:** 6DOF kinematics (Pitch, Roll, Yaw) are visualized for both the chassis and the relative blade roll.
+*   **Control Model:** Effort-based (Torque/Force) control for 5 active degrees of freedom: Tracks (Linear/Rotational), Arm Lift, Blade Pitch, and Blade Roll. 

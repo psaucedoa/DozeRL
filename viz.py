@@ -34,8 +34,12 @@ def get_terrain_color(t):
 def main():
     rr.init("SoilSim", spawn=True)
     
-    # Binary Header Format: int, 12 floats, 1 int, 1 float
-    header_format = "i12fif"
+    # New Binary Header Format: 
+    # int step (i)
+    # 16 floats (16f): Pose(6), Joints(8), Tracks(2)
+    # int grid_size (i)
+    # float cell_size (f)
+    header_format = "i16fif"
     header_size = struct.calcsize(header_format)
     
     try:
@@ -53,9 +57,14 @@ def main():
             
         header = struct.unpack(header_format, header_data)
         step = header[0]
-        bx, by, bwidth, pitch, roll, loader_x, loader_z, lat_pos, yaw, blade_roll_rel, arm_height, blade_pitch_rel = header[1:13]
-        grid_size = header[13]
-        cell_size = header[14]
+        (loader_x, loader_z, lat_pos, yaw, pitch, roll,
+         arm_height, vel_arm,
+         blade_pitch_rel, vel_pitch,
+         blade_roll_rel, vel_roll,
+         blade_yaw_rel, vel_yaw,
+         track_v_lin, track_v_rot) = header[1:17]
+        grid_size = header[17]
+        cell_size = header[18]
         
         # Read the grid of floats
         grid_bytes = f.read(grid_size * grid_size * 4)
@@ -123,6 +132,7 @@ def main():
         loader_height = 2.5
         blade_height = 1.0
         blade_thickness = 0.2
+        blade_width = 2.2 # Fixed width for visualization
         
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         
@@ -140,8 +150,8 @@ def main():
         blade_local_x = 2.0
         blade_local_z = arm_height - loader_height / 2.0 + blade_height / 2.0
         
-        # Apply blade roll and pitch relative to chassis
-        rot_blade = R.from_euler('YX', [-blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
+        # Apply blade roll, pitch, and yaw relative to chassis
+        rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
 
         rr.log("world/machine/blade_hinge", rr.Transform3D(
             translation=[blade_local_x, 0, blade_local_z],
@@ -149,7 +159,7 @@ def main():
         ))
 
         rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(
-            half_sizes=[[blade_thickness / 2.0, bwidth / 2.0, blade_height / 2.0]], 
+            half_sizes=[[blade_thickness / 2.0, blade_width / 2.0, blade_height / 2.0]], 
             colors=[[255, 50, 50]]
         ))
 

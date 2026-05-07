@@ -3,13 +3,41 @@
 #include <math.h>
 #include <time.h>
 
-#define GRID_SIZE 100
+#define GRID_SIZE 200
 #define PI 3.14159265358979323846f
 #define CELL_SIZE 0.2f 
 
 #define SWELL_RATIO 1.2f
 #define LOOSE_SOIL_DENSITY 1300.0f
 #define GRAVITY 9.81f
+
+// Actuator Dynamics Constants
+#define MAX_FORCE_LIFT 50000.0f
+#define MAX_TORQUE_PITCH 15000.0f
+#define MAX_TORQUE_ROLL 15000.0f
+#define MAX_FORCE_LINEAR 40000.0f
+#define MAX_TORQUE_ROTATIONAL 30000.0f
+
+#define ARM_MASS 800.0f
+#define PITCH_INERTIA 200.0f
+#define ROLL_INERTIA 200.0f
+#define MACHINE_MASS 4500.0f
+#define MACHINE_INERTIA 6000.0f
+
+#define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
+#define PITCH_DAMPING 50000.0f // Increased to slow down pitch
+#define ROLL_DAMPING 50000.0f  // Increased to slow down roll
+#define LINEAR_DAMPING 10000.0f
+#define ROTATIONAL_DAMPING 15000.0f
+
+#define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
+
+#define ARM_MIN -0.1f
+#define ARM_MAX 1.5f
+#define PITCH_MIN (-30.0f * (PI / 180.0f))
+#define PITCH_MAX (45.0f * (PI / 180.0f))
+#define ROLL_MIN (-20.0f * (PI / 180.0f))
+#define ROLL_MAX (20.0f * (PI / 180.0f))
 
 // Global Soil Properties
 float env_c = 200.0f;      // Reduced from 1000.0f for more realistic loose soil
@@ -38,11 +66,26 @@ typedef struct {
     float yaw;
     
     // Actuators (Action Space)
-    float v_linear;
-    float v_rotational;
-    float arm_height;
-    float blade_pitch_rel;
-    float blade_roll_rel; // Operator command: blade roll relative to chassis
+    float v_linear;        // Current linear velocity
+    float v_rotational;    // Current rotational velocity
+    float arm_height;      // Current arm height (m)
+    float blade_pitch_rel; // Current relative pitch (rad)
+    float blade_roll_rel;  // Current relative roll (rad)
+    float blade_yaw_rel;   // Current relative yaw (rad)
+    
+    // Effort Inputs (-1.0 to 1.0)
+    float effort_lift;
+    float effort_pitch;
+    float effort_roll;
+    float effort_yaw;      // Fixed at 0 for now
+    float effort_linear;
+    float effort_rotational;
+
+    // Internal Actuator State (Velocities)
+    float vel_arm_height;
+    float vel_pitch_rel;
+    float vel_roll_rel;
+    float vel_yaw_rel;
     
     float loader_x;
     float loader_z;
@@ -154,22 +197,50 @@ void env_reset(SoilEnv* env, int seed) {
         }
     }
 
+    berm_x = 16.0f;
+    berm_height = 0.6f; 
+    berm_width = 3.9f;  
+    
+    for (int i = 0; i < GRID_SIZE; i++) {
+        float x_m = i * CELL_SIZE;
+        float dist = fabsf(x_m - berm_x);
+        if (dist < berm_width / 2.0f) {
+            float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
+            for (int j = 0; j < GRID_SIZE; j++) {
+                env->grid_H[i][j] += h_add;
+            }
+        }
+    }
+
     // Initialize blade state
-    env->blade.x = 0.0f;
+    env->blade.x = 3.0f;
     env->blade.y = 0.8f;
     env->blade.lat_pos = 10.0f;
     env->blade.width = 2.2f;
     env->blade.rake_angle = 45.0f * (PI / 180.0f);
     env->blade.surcharge_Q = 0.0f;
-    env->blade.pitch = 0.0f;
+    env->blade.pitch = -0.35f;
     env->blade.roll = 0.0f;
     env->blade.yaw = 0.0f;
     
-    env->blade.v_linear = 1.0f;
+    env->blade.v_linear = 0.0f;
     env->blade.v_rotational = 0.0f;
-    env->blade.arm_height = 0.15f;
+    env->blade.arm_height = 0.25f;
     env->blade.blade_pitch_rel = 0.0f;
     env->blade.blade_roll_rel = 0.0f;
+    env->blade.blade_yaw_rel = 0.0f;
+
+    env->blade.effort_lift = 0.0f;
+    env->blade.effort_pitch = 0.0f;
+    env->blade.effort_roll = 0.0f;
+    env->blade.effort_yaw = 0.0f;
+    env->blade.effort_linear = 0.0f;
+    env->blade.effort_rotational = 0.0f;
+
+    env->blade.vel_arm_height = 0.0f;
+    env->blade.vel_pitch_rel = 0.0f;
+    env->blade.vel_roll_rel = 0.0f;
+    env->blade.vel_yaw_rel = 0.0f;
     
     env->blade.loader_x = 0.0f;
     env->blade.loader_z = 0.0f;
@@ -388,24 +459,87 @@ void simulate_step(SoilEnv* env, float dt) {
     float prev_x = blade->x;
     float prev_y = blade->y; 
 
+    // 0. Actuator Dynamics (Effort to Velocity/Position)
+    
+    // Linear Tracks
+    float net_force_linear = blade->effort_linear * MAX_FORCE_LINEAR - blade->last_force;
+    blade->v_linear = (blade->v_linear + (net_force_linear / MACHINE_MASS) * dt) / (1.0f + (LINEAR_DAMPING / MACHINE_MASS) * dt);
+    
+    // Rotational Tracks (Machine Yaw)
+    float net_torque_rot = blade->effort_rotational * MAX_TORQUE_ROTATIONAL + blade->last_yaw_moment;
+    blade->v_rotational = (blade->v_rotational + (net_torque_rot / MACHINE_INERTIA) * dt) / (1.0f + (ROTATIONAL_DAMPING / MACHINE_INERTIA) * dt);
+
+    // External load backdrive
+    float external_lift_force = blade->last_force * 0.2f;
+    float external_pitch_torque = blade->last_force * 0.5f;
+    float external_roll_torque = blade->last_yaw_moment * 0.5f;
+    float blade_stiffness = 0.98f; // Easier to backdrive than arm (HYDRAULIC_STIFFNESS)
+
+    // Arm Lift
+    float gravity_force_arm = ARM_MASS * GRAVITY;
+    float applied_force_lift = blade->effort_lift * MAX_FORCE_LIFT;
+    float external_total_lift = -gravity_force_arm - external_lift_force;
+    
+    // Hydraulic check valves prevent external forces from backdriving unless assisting the command
+    if (blade->effort_lift * external_total_lift <= 0) {
+        external_total_lift *= (1.0f - HYDRAULIC_STIFFNESS); 
+    }
+    float net_force_lift = applied_force_lift + external_total_lift;
+    
+    if (fabsf(blade->effort_lift) < 0.05f) {
+        blade->vel_arm_height *= 0.9f; // Active braking
+    }
+    blade->vel_arm_height = (blade->vel_arm_height + (net_force_lift / ARM_MASS) * dt) / (1.0f + (ARM_DAMPING / ARM_MASS) * dt);
+    blade->arm_height += blade->vel_arm_height * dt;
+    if (blade->arm_height < ARM_MIN) { blade->arm_height = ARM_MIN; blade->vel_arm_height = 0; }
+    if (blade->arm_height > ARM_MAX) { blade->arm_height = ARM_MAX; blade->vel_arm_height = 0; }
+
+    // Blade Pitch
+    float applied_torque_pitch = blade->effort_pitch * MAX_TORQUE_PITCH;
+    float external_total_pitch = external_pitch_torque;
+    if (blade->effort_pitch * external_total_pitch <= 0) {
+        external_total_pitch *= (1.0f - blade_stiffness);
+    }
+    float net_torque_pitch = applied_torque_pitch + external_total_pitch;
+
+    if (fabsf(blade->effort_pitch) < 0.05f) {
+        blade->vel_pitch_rel *= 0.9f;
+    }
+    blade->vel_pitch_rel = (blade->vel_pitch_rel + (net_torque_pitch / PITCH_INERTIA) * dt) / (1.0f + (PITCH_DAMPING / PITCH_INERTIA) * dt);
+    blade->blade_pitch_rel += blade->vel_pitch_rel * dt;
+    if (blade->blade_pitch_rel < PITCH_MIN) { blade->blade_pitch_rel = PITCH_MIN; blade->vel_pitch_rel = 0; }
+    if (blade->blade_pitch_rel > PITCH_MAX) { blade->blade_pitch_rel = PITCH_MAX; blade->vel_pitch_rel = 0; }
+
+    // Blade Roll
+    float applied_torque_roll = blade->effort_roll * MAX_TORQUE_ROLL;
+    float external_total_roll = external_roll_torque;
+    if (blade->effort_roll * external_total_roll <= 0) {
+        external_total_roll *= (1.0f - blade_stiffness);
+    }
+    float net_torque_roll = applied_torque_roll + external_total_roll;
+
+    if (fabsf(blade->effort_roll) < 0.05f) {
+        blade->vel_roll_rel *= 0.9f;
+    }
+    blade->vel_roll_rel = (blade->vel_roll_rel + (net_torque_roll / ROLL_INERTIA) * dt) / (1.0f + (ROLL_DAMPING / ROLL_INERTIA) * dt);
+    blade->blade_roll_rel += blade->vel_roll_rel * dt;
+    if (blade->blade_roll_rel < ROLL_MIN) { blade->blade_roll_rel = ROLL_MIN; blade->vel_roll_rel = 0; }
+    if (blade->blade_roll_rel > ROLL_MAX) { blade->blade_roll_rel = ROLL_MAX; blade->vel_roll_rel = 0; }
+
     // Apply dynamic pitch to rake angle
     float base_rake_angle = 45.0f * (PI / 180.0f);
     blade->rake_angle = base_rake_angle + blade->blade_pitch_rel + blade->pitch;
     precompute_FEE(blade->rake_angle, 0.0f);
 
     // Track Slip Dynamics
-    float max_traction = 30000.0f; 
+    float max_traction = 35000.0f; 
     float slip_ratio = blade->last_force / max_traction;
     if (slip_ratio < 0.0f) slip_ratio = 0.0f;
     if (slip_ratio > 1.0f) slip_ratio = 1.0f; 
     
     float v_actual = blade->v_linear * (1.0f - slip_ratio);
 
-    // Yaw Drift Dynamics
-    // Last yaw moment twists the machine. Tracks have high friction (stiffness).
-    float yaw_stiffness = 50000.0f; // Nm/rad roughly
-    blade->yaw -= (blade->last_yaw_moment / yaw_stiffness) * dt;
-    // Add commanded rotation
+    // Update Heading
     blade->yaw += blade->v_rotational * dt;
 
     // Move Forward in 2D
@@ -471,7 +605,7 @@ void simulate_step(SoilEnv* env, float dt) {
         
         // Calculate physics force specific to this column hitting the undisturbed wall
         int front_idx = end_idx + 1;
-        if (front_idx < GRID_SIZE) {
+        if (front_idx >= 0 && front_idx < GRID_SIZE) {
             float blade_elev = curr_y + w * sinf(blade->roll + blade->blade_roll_rel);
             float static_depth = env->grid_H[front_idx][j] - blade_elev;
             if (static_depth > 0) {
@@ -528,23 +662,35 @@ void simulate_step(SoilEnv* env, float dt) {
 
 #ifndef BENCHMARK
     if (env->step_num % 5 == 0) {
-        printf("Step %d [X: %.2fm, Y: %.2fm]: Yaw: %5.2f° | Roll: %4.1f° | Slip: %3.0f%% | M_yaw: %6.0f Nm\n", 
+        printf("Step %d [X: %.2fm, Y: %.2fm]: Yaw: %5.2f° | Roll: %4.1f° | Slip: %3.0f%% | Q: %6.0f N | M_yaw: %6.0f Nm\n", 
                env->step_num, blade->x, blade->lat_pos, blade->yaw * (180.0f/PI), 
-               blade->roll * (180.0f/PI), slip_ratio * 100.0f, blade->last_yaw_moment);
+               blade->roll * (180.0f/PI), slip_ratio * 100.0f, blade->surcharge_Q, blade->last_yaw_moment);
     }
 
     // Write to Rerun visualizer in binary format for high performance
     if (outfile) {
         struct {
             int step;
-            float bx, by, bw, pitch, roll, lx, lz, lat, yaw, blade_roll_rel, arm_height, blade_pitch_rel;
+            // Chassis Pose
+            float l_x, l_z, l_lat, yaw, pitch, roll;
+            // Joint States (Position, Velocity)
+            float arm_pos, arm_vel;
+            float pitch_pos, pitch_vel;
+            float roll_pos, roll_vel;
+            float yaw_pos, yaw_vel;
+            // Track Velocities
+            float track_v_lin, track_v_rot;
+            
             int grid_size;
             float cell_size;
         } header = {
-            env->step_num, blade->x, blade->y, blade->width, 
-            blade->pitch, blade->roll, blade->loader_x, blade->loader_z,
-            blade->lat_pos, blade->yaw, blade->blade_roll_rel,
-            blade->arm_height, blade->blade_pitch_rel,
+            env->step_num,
+            blade->loader_x, blade->loader_z, blade->lat_pos, blade->yaw, blade->pitch, blade->roll,
+            blade->arm_height, blade->vel_arm_height,
+            blade->blade_pitch_rel, blade->vel_pitch_rel,
+            blade->blade_roll_rel, blade->vel_roll_rel,
+            blade->blade_yaw_rel, blade->vel_yaw_rel,
+            blade->v_linear, blade->v_rotational,
             GRID_SIZE, CELL_SIZE
         };
         
@@ -585,22 +731,35 @@ int main() {
     double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
     printf("Benchmarking RL-Optimized Sim: %d steps in %.4f seconds (%.2f Hz)\n", steps, elapsed, steps / elapsed);
 #else
-    printf("Starting 6DOF 3D Soil Simulation for RL...\n");
-    float dt = 0.01f; 
+    printf("Starting 6DOF 3D Soil Simulation with Effort Control...\n");
+    float dt = 0.02f; 
     
     // Simulate some movement and actuation
-    for (int t = 0; t < 2000; t++) {
+    for (int t = 0; t < 1000; t++) {
+        // Default forward effort
+        
         // Change actions periodically to test them out
-        if (t > 400 && t < 800) {
-            env->blade.arm_height = 0.05f; // Drop arm
+        if (t < 200) {
+            env->blade.effort_linear = 0.0f;
+            env->blade.effort_lift = 0.0f; 
+            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_roll = 0.0f;
+        } else if (t >= 200 && t < 400) {
+            env->blade.effort_lift = 0.1f; 
+            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_roll = 0.0f;
+        } else if (t >= 400 && t < 600) {
+            env->blade.effort_lift = 0.2f; 
+            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_roll = 0.0f;
+        } else if (t >= 600 && t < 800) {
+            env->blade.effort_lift = 0.3f; 
+            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_roll = 0.0f;
         } else if (t >= 800 && t < 1000) {
-            env->blade.arm_height = 0.15f;
-        } else if (t >= 1000 && t < 1200) {
-            env->blade.arm_height = 0.10f; 
-        } else if (t >= 1200) {
-            env->blade.arm_height = 0.15f; 
-            env->blade.v_rotational = 0.0f;
-            env->blade.blade_pitch_rel = 0.2f; // Pitch up
+            env->blade.effort_lift = 0.4f; 
+            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_roll = 0.0f;
         }
         
         simulate_step(env, dt);

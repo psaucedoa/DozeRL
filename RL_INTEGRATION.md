@@ -12,26 +12,32 @@ PufferLib (and most RL frameworks) run many environments in parallel. The curren
 ## 2. Joint Control & Actuation (6-DOF Control)
 The agent needs explicit control over the machine's actuators. The "target cut depth" should be replaced by a physical arm model.
 
-### Action Space (Inputs)
-*   **Drive Tracks:** `v_linear`, `v_rotational` (allows for steering/yaw control).
-*   **Arm Lift:** `arm_height` (Relative height of the blade hinge above the tracks).
-*   **Blade Pitch:** `blade_pitch_rel` (Tilt forward/back, affecting the `rake_angle`).
-*   **Blade Roll:** `blade_roll_rel` (Tilt left/right relative to the chassis).
+### Action Space (Inputs: -1.0 to 1.0)
+The environment uses **Torque/Force Control (Effort)** for all actuators. The agent provides normalized effort values which are integrated through a dynamics model.
 
-### Kinematic Updates
-The `update_kinematics` function must be modified to calculate the final blade edge position based on the combination of:
-1.  Chassis Pose (Track height sampling).
-2.  Arm Height.
-3.  Relative Blade Pitch/Roll.
+*   **Linear Tracks:** `effort_linear` (Accelerates the machine forward/backward).
+*   **Rotational Tracks:** `effort_rotational` (Accelerates machine yaw/heading).
+*   **Arm Lift:** `effort_lift` (Vertical force on the lift arm; combats gravity and soil resistance).
+*   **Blade Pitch:** `effort_pitch` (Torque for tilting the blade forward/back).
+*   **Blade Roll:** `effort_roll` (Torque for tilting the blade left/right).
+*   **Blade Yaw:** `effort_yaw` (Currently fixed at 0; no relative blade yaw).
+
+### Actuator Dynamics
+Each joint follows the simplified dynamics:
+$$\text{accel} = \frac{\text{effort} \cdot F_{max} - F_{resist} - \text{damping} \cdot \text{vel}}{\text{mass/inertia}}$$
+$$\text{vel}_{t+1} = \text{vel}_t + \text{accel} \cdot \Delta t$$
+$$\text{pos}_{t+1} = \text{pos}_t + \text{vel}_{t+1} \cdot \Delta t$$
+
 
 ## 3. Observation Space (State Representation)
 For an agent to learn, it needs a "window" into the world.
 
 ### Proprioceptive Observations (Vector)
-*   **Machine Attitude:** Pitch, Roll, Yaw rate.
-*   **Actuator States:** Current arm height, blade pitch, and blade roll.
-*   **No Force Feedback:** In real operation, the vehicle won't know soil properties ahead of time.
-*   **Surcharge:** `surcharge_Q` (normalized).
+*   **Chassis Attitude:** Pitch, Roll, Yaw rate (from IMU).
+*   **Joint Positions:** Current `arm_height`, `blade_pitch_rel`, and `blade_roll_rel`.
+*   **Joint Velocities:** Current `vel_arm_height`, `vel_pitch_rel`, and `vel_roll_rel`.
+*   **Track State:** Linear velocity `v_linear` and rotational velocity `v_rotational`. (Note: Real tracks only report velocity, not position).
+*   **Internal State:** Surcharge `surcharge_Q` and total resistive force `last_force`.
 
 ### Spatial Observations (Heightmap Image)
 *   **Local Terrain:** A small cropped window (e.g., 32x32 cells) of the heightmap centered immediately in front of the blade. This allows the agent to "see" the pile it is pushing.
