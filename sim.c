@@ -710,7 +710,7 @@ void simulate_step(SoilEnv* env, float dt) {
         float curr_edge_x = curr_x - w * sinf(blade->yaw);
         int start_i = (int)(curr_edge_x / CELL_SIZE) + 1;
         
-        for (int i = start_i; i <= start_i + 15; i++) {
+        for (int i = start_i; i <= start_i + (int)(1.5f / CELL_SIZE); i++) {
             if (i >= 0 && i < GRID_SIZE) {
                 current_surcharge_vol += env->grid_L[i][j] * CELL_SIZE * CELL_SIZE;
             }
