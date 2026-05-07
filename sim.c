@@ -102,6 +102,64 @@ typedef struct {
     int step_num;
 } SoilEnv;
 
+#define SPATIAL_OBS_SIZE 32
+
+typedef struct {
+    float proprioceptive[11];
+    float spatial[SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
+} Observation;
+
+void env_get_observation(SoilEnv* env, Observation* obs) {
+    Blade* blade = &env->blade;
+    
+    // Proprioceptive observations
+    // Chassis Attitude: Pitch, Roll, Yaw rate
+    obs->proprioceptive[0] = blade->pitch;
+    obs->proprioceptive[1] = blade->roll;
+    obs->proprioceptive[2] = blade->v_rotational; // Yaw rate
+    
+    // Joint Positions
+    obs->proprioceptive[3] = blade->arm_height;
+    obs->proprioceptive[4] = blade->blade_pitch_rel;
+    obs->proprioceptive[5] = blade->blade_roll_rel;
+    
+    // Joint Velocities
+    obs->proprioceptive[6] = blade->vel_arm_height;
+    obs->proprioceptive[7] = blade->vel_pitch_rel;
+    obs->proprioceptive[8] = blade->vel_roll_rel;
+    
+    // Track State
+    obs->proprioceptive[9] = blade->v_linear;
+    obs->proprioceptive[10] = blade->v_rotational; 
+
+    // Spatial Observations (Heightmap Image)
+    // 32x32 window centered in front of the blade.
+    float cos_y = cosf(blade->yaw);
+    float sin_y = sinf(blade->yaw);
+
+    for (int i = 0; i < SPATIAL_OBS_SIZE; i++) {
+        for (int j = 0; j < SPATIAL_OBS_SIZE; j++) {
+            // Local coordinates relative to blade center
+            float local_x = i * CELL_SIZE; 
+            float local_y = (j - SPATIAL_OBS_SIZE / 2.0f) * CELL_SIZE;
+
+            // Transform to global
+            float global_x = blade->x + local_x * cos_y - local_y * sin_y;
+            float global_lat = blade->lat_pos + local_x * sin_y + local_y * cos_y;
+
+            int grid_i = (int)(global_x / CELL_SIZE);
+            int grid_j = (int)(global_lat / CELL_SIZE);
+
+            if (grid_i >= 0 && grid_i < GRID_SIZE && grid_j >= 0 && grid_j < GRID_SIZE) {
+                // Height relative to chassis (loader_z)
+                obs->spatial[i][j] = env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j] - blade->loader_z;
+            } else {
+                obs->spatial[i][j] = 0.0f; // Out of bounds
+            }
+        }
+    }
+}
+
 FILE* outfile;
 
 void precompute_FEE(float rake_angle, float alpha) {
@@ -732,7 +790,7 @@ int main() {
     printf("Benchmarking RL-Optimized Sim: %d steps in %.4f seconds (%.2f Hz)\n", steps, elapsed, steps / elapsed);
 #else
     printf("Starting 6DOF 3D Soil Simulation with Effort Control...\n");
-    float dt = 0.02f; 
+    float dt = 0.01f; 
     
     // Simulate some movement and actuation
     for (int t = 0; t < 1000; t++) {
@@ -740,25 +798,27 @@ int main() {
         
         // Change actions periodically to test them out
         if (t < 200) {
-            env->blade.effort_linear = 0.0f;
+            env->blade.effort_linear = 0.8f;
+            env->blade.effort_rotational = 0.2f;
             env->blade.effort_lift = 0.0f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 200 && t < 400) {
-            env->blade.effort_lift = 0.1f; 
+            env->blade.effort_rotational = 0.0f;
+            env->blade.effort_lift = 0.0f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 400 && t < 600) {
-            env->blade.effort_lift = 0.2f; 
+            env->blade.effort_lift = 0.0f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 600 && t < 800) {
-            env->blade.effort_lift = 0.3f; 
+            env->blade.effort_lift = 0.0f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 800 && t < 1000) {
-            env->blade.effort_lift = 0.4f; 
-            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_lift = 0.0f; 
+            env->blade.effort_pitch = -0.2f;
             env->blade.effort_roll = 0.0f;
         }
         
