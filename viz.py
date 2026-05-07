@@ -76,7 +76,8 @@ def main():
         
         # 1. Calculate Hillshading (Shaded Relief)
         # This is the most effective way to see small height variations
-        dzdy, dzdx = np.gradient(grid_data, cell_size)
+        # np.gradient returns (grad_axis0, grad_axis1) -> (dzdx, dzdy)
+        dzdx, dzdy = np.gradient(grid_data, cell_size)
         
         # Light source from the top-left (machine start area)
         light_dir = np.array([-1.0, -1.0, 1.5]) 
@@ -136,8 +137,11 @@ def main():
         
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         
+        # loader_lat is passed in the header as lat_pos (header[3])
+        loader_lat = lat_pos 
+        
         rr.log("world/machine", rr.Transform3D(
-            translation=[loader_x, lat_pos, loader_z + loader_height / 2.0],
+            translation=[loader_x, loader_lat, loader_z + loader_height / 2.0],
             rotation=rr.Quaternion(xyzw=rot_chassis)
         ))
         

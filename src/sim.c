@@ -1,45 +1,6 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <time.h>
+#include "sim.h"
 
-#define GRID_SIZE 200
-#define PI 3.14159265358979323846f
-#define CELL_SIZE 0.2f 
-
-#define SWELL_RATIO 1.2f
-#define LOOSE_SOIL_DENSITY 1300.0f
-#define GRAVITY 9.81f
-
-// Actuator Dynamics Constants
-#define MAX_FORCE_LIFT 50000.0f
-#define MAX_TORQUE_PITCH 15000.0f
-#define MAX_TORQUE_ROLL 15000.0f
-#define MAX_FORCE_LINEAR 40000.0f
-#define MAX_TORQUE_ROTATIONAL 30000.0f
-
-#define ARM_MASS 800.0f
-#define PITCH_INERTIA 200.0f
-#define ROLL_INERTIA 200.0f
-#define MACHINE_MASS 4500.0f
-#define MACHINE_INERTIA 6000.0f
-
-#define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
-#define PITCH_DAMPING 50000.0f // Increased to slow down pitch
-#define ROLL_DAMPING 50000.0f  // Increased to slow down roll
-#define LINEAR_DAMPING 10000.0f
-#define ROTATIONAL_DAMPING 15000.0f
-
-#define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
-
-#define ARM_MIN -0.1f
-#define ARM_MAX 1.5f
-#define PITCH_MIN (-30.0f * (PI / 180.0f))
-#define PITCH_MAX (45.0f * (PI / 180.0f))
-#define ROLL_MIN (-20.0f * (PI / 180.0f))
-#define ROLL_MAX (20.0f * (PI / 180.0f))
-
-// Global Soil Properties
+// Global Soil Properties Definitions
 float env_c = 200.0f;      // Reduced from 1000.0f for more realistic loose soil
 float env_c_a = 500.0f;    
 float env_phi = 30.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f (typical sand)
@@ -49,65 +10,7 @@ float env_gamma = 1500.0f * GRAVITY;
 // Precomputed FEE Factors
 float N_gamma, N_Q, N_c, N_ca;
 
-typedef struct {
-    // Spatial Origin (Center of Blade)
-    float x;           
-    float y;           
-    float lat_pos; // Lateral position (Y-axis in world coords)
-    
-    // Blade Geometry & State
-    float width;       
-    float rake_angle;  
-    float surcharge_Q; 
-    
-    // 6DOF Kinematics
-    float pitch;
-    float roll;
-    float yaw;
-    
-    // Actuators (Action Space)
-    float v_linear;        // Current linear velocity
-    float v_rotational;    // Current rotational velocity
-    float arm_height;      // Current arm height (m)
-    float blade_pitch_rel; // Current relative pitch (rad)
-    float blade_roll_rel;  // Current relative roll (rad)
-    float blade_yaw_rel;   // Current relative yaw (rad)
-    
-    // Effort Inputs (-1.0 to 1.0)
-    float effort_lift;
-    float effort_pitch;
-    float effort_roll;
-    float effort_yaw;      // Fixed at 0 for now
-    float effort_linear;
-    float effort_rotational;
-
-    // Internal Actuator State (Velocities)
-    float vel_arm_height;
-    float vel_pitch_rel;
-    float vel_roll_rel;
-    float vel_yaw_rel;
-    
-    float loader_x;
-    float loader_z;
-    
-    // Dynamics
-    float last_force; 
-    float last_yaw_moment;
-} Blade;
-
-typedef struct {
-    float grid_H[GRID_SIZE][GRID_SIZE];
-    float grid_L[GRID_SIZE][GRID_SIZE];
-    Blade blade;
-    int step_num;
-} SoilEnv;
-
-#define SPATIAL_OBS_SIZE 32
-
-typedef struct {
-    float proprioceptive[11];
-    float spatial[SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
-} Observation;
+FILE* outfile;
 
 void env_get_observation(SoilEnv* env, Observation* obs) {
     Blade* blade = &env->blade;
@@ -159,8 +62,6 @@ void env_get_observation(SoilEnv* env, Observation* obs) {
         }
     }
 }
-
-FILE* outfile;
 
 void precompute_FEE(float rake_angle, float alpha) {
     float rho = rake_angle;
@@ -222,22 +123,6 @@ void env_reset(SoilEnv* env, int seed) {
             }
         }
     }
-
-    // 3. Add a berm y
-    // float berm_y = 8.0f;
-    // float berm_height = 0.6f; 
-    // float berm_width = 3.9f;  
-    
-    // for (int j = 0; j < GRID_SIZE; j++) {
-    //     float x_m = j * CELL_SIZE;
-    //     float dist = fabsf(x_m - berm_y);
-    //     if (dist < berm_width / 2.0f) {
-    //         float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
-    //         for (int i = 0; i < GRID_SIZE; i++) {
-    //             env->grid_H[i][j] += h_add;
-    //         }
-    //     }
-    // }
 
     // 3. Add a berm x
     float berm_x = 8.0f;
@@ -423,7 +308,7 @@ void update_kinematics(SoilEnv* env) {
 
     // Chassis center (behind the blade)
     blade->loader_x = blade->x - blade_offset_x * cosf(blade->yaw);
-    float loader_lat = blade->lat_pos - blade_offset_x * sinf(blade->yaw);
+    blade->loader_lat = blade->lat_pos - blade_offset_x * sinf(blade->yaw);
     
     float cos_y = cosf(blade->yaw);
     float sin_y = sinf(blade->yaw);
@@ -445,11 +330,11 @@ void update_kinematics(SoilEnv* env) {
         
         // Left track point
         float l_x = blade->loader_x + local_x * cos_y - hW * sin_y;
-        float l_lat = loader_lat + local_x * sin_y + hW * cos_y;
+        float l_lat = blade->loader_lat + local_x * sin_y + hW * cos_y;
         
         // Right track point
         float r_x = blade->loader_x + local_x * cos_y + hW * sin_y;
-        float r_lat = loader_lat + local_x * sin_y - hW * cos_y;
+        float r_lat = blade->loader_lat + local_x * sin_y - hW * cos_y;
         
         float z_L = 1.0f; // Default height
         float z_R = 1.0f;
@@ -743,7 +628,7 @@ void simulate_step(SoilEnv* env, float dt) {
             float cell_size;
         } header = {
             env->step_num,
-            blade->loader_x, blade->loader_z, blade->lat_pos, blade->yaw, blade->pitch, blade->roll,
+            blade->loader_x, blade->loader_z, blade->loader_lat, blade->yaw, blade->pitch, blade->roll,
             blade->arm_height, blade->vel_arm_height,
             blade->blade_pitch_rel, blade->vel_pitch_rel,
             blade->blade_roll_rel, blade->vel_roll_rel,
