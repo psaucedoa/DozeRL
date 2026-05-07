@@ -43,7 +43,7 @@ def main():
     header_size = struct.calcsize(header_format)
     
     try:
-        f = open("sim_out.bin", "rb")
+        f = open("out/sim_out.bin", "rb")
     except FileNotFoundError:
         print("Error: sim_out.bin not found. Did you run 'make sim && ./sim'?")
         return
