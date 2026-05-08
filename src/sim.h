@@ -6,9 +6,9 @@
 #include <math.h>
 #include <time.h>
 
-#define GRID_SIZE 200
+#define GRID_SIZE 300
 #define PI 3.14159265358979323846f
-#define CELL_SIZE 0.2f 
+#define CELL_SIZE 0.1f 
 
 #define SWELL_RATIO 1.2f
 #define LOOSE_SOIL_DENSITY 1300.0f
@@ -47,8 +47,8 @@
 typedef struct {
     // Spatial Origin (Center of Blade)
     float x;           
-    float y;           
-    float lat_pos; // Lateral position (Y-axis in world coords)
+    float y; // Lateral position (Y-axis in world coords)
+    float z; // Elevation (Z-axis in world coords)
     
     // Blade Geometry & State
     float width;       
@@ -83,7 +83,7 @@ typedef struct {
     float vel_yaw_rel;
     
     float loader_x;
-    float loader_lat;
+    float loader_y;
     float loader_z;
     
     // Dynamics

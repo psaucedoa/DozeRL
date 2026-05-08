@@ -48,10 +48,10 @@ void env_get_observation(SoilEnv* env, Observation* obs) {
 
             // Transform to global
             float global_x = blade->x + local_x * cos_y - local_y * sin_y;
-            float global_lat = blade->lat_pos + local_x * sin_y + local_y * cos_y;
+            float global_y = blade->y + local_x * sin_y + local_y * cos_y;
 
             int grid_i = (int)(global_x / CELL_SIZE);
-            int grid_j = (int)(global_lat / CELL_SIZE);
+            int grid_j = (int)(global_y / CELL_SIZE);
 
             if (grid_i >= 0 && grid_i < GRID_SIZE && grid_j >= 0 && grid_j < GRID_SIZE) {
                 // Height relative to chassis (loader_z)
@@ -125,40 +125,38 @@ void env_reset(SoilEnv* env, int seed) {
     }
 
     // 3. Add a berm x
-    float berm_x = 8.0f;
-    float berm_height = 0.6f; 
-    float berm_width = 3.9f;  
-    
-    for (int i = 0; i < GRID_SIZE; i++) {
-        float x_m = i * CELL_SIZE;
-        float dist = fabsf(x_m - berm_x);
-        if (dist < berm_width / 2.0f) {
-            float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
-            for (int j = 0; j < GRID_SIZE; j++) {
-                env->grid_H[i][j] += h_add;
-            }
-        }
-    }
+    // float berm_x = 8.0f;
+    // float berm_height = 0.6f; 
+    // float berm_width = 3.9f;  
+    // for (int i = 0; i < GRID_SIZE; i++) {
+    //     float x_m = i * CELL_SIZE;
+    //     float dist = fabsf(x_m - berm_x);
+    //     if (dist < berm_width / 2.0f) {
+    //         float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
+    //         for (int j = 0; j < GRID_SIZE; j++) {
+    //             env->grid_H[i][j] += h_add;
+    //         }
+    //     }
+    // }
 
-    berm_x = 16.0f;
-    berm_height = 0.6f; 
-    berm_width = 3.9f;  
-    
-    for (int i = 0; i < GRID_SIZE; i++) {
-        float x_m = i * CELL_SIZE;
-        float dist = fabsf(x_m - berm_x);
-        if (dist < berm_width / 2.0f) {
-            float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
-            for (int j = 0; j < GRID_SIZE; j++) {
-                env->grid_H[i][j] += h_add;
-            }
-        }
-    }
+    // berm_x = 12.0f;
+    // berm_height = 0.6f; 
+    // berm_width = 3.9f;  
+    // for (int i = 0; i < GRID_SIZE; i++) {
+    //     float x_m = i * CELL_SIZE;
+    //     float dist = fabsf(x_m - berm_x);
+    //     if (dist < berm_width / 2.0f) {
+    //         float h_add = berm_height * 0.5f * (1.0f + cosf(2.0f * PI * dist / berm_width));
+    //         for (int j = 0; j < GRID_SIZE; j++) {
+    //             env->grid_H[i][j] += h_add;
+    //         }
+    //     }
+    // }
 
     // Initialize blade state
     env->blade.x = 3.0f;
-    env->blade.y = 0.8f;
-    env->blade.lat_pos = 10.0f;
+    env->blade.y = 10.0f;
+    env->blade.z = 0.8f;
     env->blade.width = 2.2f;
     env->blade.rake_angle = 45.0f * (PI / 180.0f);
     env->blade.surcharge_Q = 0.0f;
@@ -186,6 +184,7 @@ void env_reset(SoilEnv* env, int seed) {
     env->blade.vel_yaw_rel = 0.0f;
     
     env->blade.loader_x = 0.0f;
+    env->blade.loader_y = 0.0f;
     env->blade.loader_z = 0.0f;
     env->blade.last_force = 0.0f;
     env->blade.last_yaw_moment = 0.0f;
@@ -209,8 +208,8 @@ void simulate_erosion(SoilEnv* env) {
     int margin_cells = (int)(4.0f / CELL_SIZE);
     int min_i = (int)(blade->x / CELL_SIZE) - margin_cells;
     int max_i = (int)(blade->x / CELL_SIZE) + margin_cells;
-    int min_j = (int)(blade->lat_pos / CELL_SIZE) - margin_cells;
-    int max_j = (int)(blade->lat_pos / CELL_SIZE) + margin_cells;
+    int min_j = (int)(blade->y / CELL_SIZE) - margin_cells;
+    int max_j = (int)(blade->y / CELL_SIZE) + margin_cells;
 
     if (min_i < 0) min_i = 0;
     if (max_i >= GRID_SIZE) max_i = GRID_SIZE - 1;
@@ -247,8 +246,8 @@ void simulate_erosion(SoilEnv* env) {
                         
                         // Rotated/Translated rigid machine collision box
                         float cell_x = ni * CELL_SIZE;
-                        float cell_lat = nj * CELL_SIZE;
-                        float w = cell_lat - blade->lat_pos; // Lateral distance from machine center
+                        float cell_y = nj * CELL_SIZE;
+                        float w = cell_y - blade->y; // Lateral distance from machine center
                         if (fabsf(w) <= blade->width / 2.0f) {
                             float blade_front_x = blade->x - w * sinf(blade->yaw);
                             float loader_back_x = blade_front_x - loader_length * cosf(blade->yaw);
@@ -299,7 +298,7 @@ void simulate_erosion(SoilEnv* env) {
     }
 }
 
-// Vehicle Kinematics Model with Yaw and Lat Pos
+// Vehicle Kinematics Model with Yaw and Y Position
 void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
     float track_length = 2.5f;
@@ -308,7 +307,7 @@ void update_kinematics(SoilEnv* env) {
 
     // Chassis center (behind the blade)
     blade->loader_x = blade->x - blade_offset_x * cosf(blade->yaw);
-    blade->loader_lat = blade->lat_pos - blade_offset_x * sinf(blade->yaw);
+    blade->loader_y = blade->y - blade_offset_x * sinf(blade->yaw);
     
     float cos_y = cosf(blade->yaw);
     float sin_y = sinf(blade->yaw);
@@ -330,21 +329,21 @@ void update_kinematics(SoilEnv* env) {
         
         // Left track point
         float l_x = blade->loader_x + local_x * cos_y - hW * sin_y;
-        float l_lat = blade->loader_lat + local_x * sin_y + hW * cos_y;
+        float l_y = blade->loader_y + local_x * sin_y + hW * cos_y;
         
         // Right track point
         float r_x = blade->loader_x + local_x * cos_y + hW * sin_y;
-        float r_lat = blade->loader_lat + local_x * sin_y - hW * cos_y;
+        float r_y = blade->loader_y + local_x * sin_y - hW * cos_y;
         
-        float z_L = 1.0f; // Default height
-        float z_R = 1.0f;
+        float track_z_L = 1.0f; // Default height
+        float track_z_R = 1.0f;
         
 
         float compaction_rate = 0.15f; // Tracks compress 15% of loose soil per sample pass
 
         // Left track sampling and compaction
         int ix_L = (int)(l_x / CELL_SIZE); 
-        int iy_L = (int)(l_lat / CELL_SIZE);
+        int iy_L = (int)(l_y / CELL_SIZE);
         if (ix_L >= 0 && ix_L < GRID_SIZE && iy_L >= 0 && iy_L < GRID_SIZE) {
             if (env->grid_L[ix_L][iy_L] > 0.001f) {
                 float compacted_amount = env->grid_L[ix_L][iy_L] * compaction_rate;
@@ -352,12 +351,12 @@ void update_kinematics(SoilEnv* env) {
                 // Revert the swell ratio when moving back to compacted state
                 env->grid_H[ix_L][iy_L] += compacted_amount / SWELL_RATIO; 
             }
-            z_L = env->grid_H[ix_L][iy_L] + env->grid_L[ix_L][iy_L];
+            track_z_L = env->grid_H[ix_L][iy_L] + env->grid_L[ix_L][iy_L];
         }
 
         // Right track sampling and compaction
         int ix_R = (int)(r_x / CELL_SIZE); 
-        int iy_R = (int)(r_lat / CELL_SIZE);
+        int iy_R = (int)(r_y / CELL_SIZE);
         if (ix_R >= 0 && ix_R < GRID_SIZE && iy_R >= 0 && iy_R < GRID_SIZE) {
             if (env->grid_L[ix_R][iy_R] > 0.001f) {
                 float compacted_amount = env->grid_L[ix_R][iy_R] * compaction_rate;
@@ -365,13 +364,13 @@ void update_kinematics(SoilEnv* env) {
                 // Revert the swell ratio when moving back to compacted state
                 env->grid_H[ix_R][iy_R] += compacted_amount / SWELL_RATIO;
             }
-            z_R = env->grid_H[ix_R][iy_R] + env->grid_L[ix_R][iy_R];
+            track_z_R = env->grid_H[ix_R][iy_R] + env->grid_L[ix_R][iy_R];
         }
         
-        sum_z_left += z_L;
-        sum_z_right += z_R;
-        sum_xz_left += local_x * z_L;
-        sum_xz_right += local_x * z_R;
+        sum_z_left += track_z_L;
+        sum_z_right += track_z_R;
+        sum_xz_left += local_x * track_z_L;
+        sum_xz_right += local_x * track_z_R;
     }
     
     float avg_z_left = sum_z_left / num_samples;
@@ -393,14 +392,14 @@ void update_kinematics(SoilEnv* env) {
     // Roll is difference between average left and right heights over the track gauge
     blade->roll = atan2f(avg_z_left - avg_z_right, track_gauge);
     
-    // Blade origin (y is Z-axis global height of blade center hinge)
-    blade->y = blade->loader_z + blade_offset_x * sinf(blade->pitch) + blade->arm_height;
+    // Blade origin (z is global elevation of blade center hinge)
+    blade->z = blade->loader_z + blade_offset_x * sinf(blade->pitch) + blade->arm_height;
 }
 
 void simulate_step(SoilEnv* env, float dt) {
     Blade* blade = &env->blade;
     float prev_x = blade->x;
-    float prev_y = blade->y; 
+    float prev_z = blade->z; 
 
     // 0. Actuator Dynamics (Effort to Velocity/Position)
     
@@ -487,13 +486,13 @@ void simulate_step(SoilEnv* env, float dt) {
 
     // Move Forward in 2D
     blade->x += v_actual * cosf(blade->yaw) * dt; 
-    blade->lat_pos += v_actual * sinf(blade->yaw) * dt;
+    blade->y += v_actual * sinf(blade->yaw) * dt;
     
     float curr_x = blade->x;
-    float curr_lat = blade->lat_pos;
+    float curr_y = blade->y;
     
     update_kinematics(env);
-    float curr_y = blade->y;
+    float curr_z = blade->z;
     
     float total_vol_cut = 0.0f;
     float total_force = 0.0f;
@@ -501,8 +500,8 @@ void simulate_step(SoilEnv* env, float dt) {
     
     // 1. Per-Column Cut & Force Calculation
     for (int j = 0; j < GRID_SIZE; j++) {
-        float cell_lat = j * CELL_SIZE;
-        float w = cell_lat - curr_lat; // Offset from blade center
+        float cell_y = j * CELL_SIZE;
+        float w = cell_y - curr_y; // Offset from blade center
         if (fabsf(w) > blade->width / 2.0f) continue;
         
         // Blade edge position at this specific column
@@ -525,9 +524,9 @@ void simulate_step(SoilEnv* env, float dt) {
                 if (t > 1.0f) t = 1.0f;
             }
             
-            float interp_center_y = prev_y + t * (curr_y - prev_y);
+            float interp_center_z = prev_z + t * (curr_z - prev_z);
             // Apply blade roll relative to chassis
-            float blade_elev = interp_center_y + w * sinf(blade->roll + blade->blade_roll_rel);
+            float blade_elev = interp_center_z + w * sinf(blade->roll + blade->blade_roll_rel);
             
             float total_h = env->grid_H[i][j] + env->grid_L[i][j];
             float depth = total_h - blade_elev;
@@ -549,12 +548,12 @@ void simulate_step(SoilEnv* env, float dt) {
         // Calculate physics force specific to this column hitting the undisturbed wall
         int front_idx = end_idx + 1;
         if (front_idx >= 0 && front_idx < GRID_SIZE) {
-            float blade_elev = curr_y + w * sinf(blade->roll + blade->blade_roll_rel);
+            float blade_elev = curr_z + w * sinf(blade->roll + blade->blade_roll_rel);
             float static_depth = env->grid_H[front_idx][j] - blade_elev;
             if (static_depth > 0) {
                 float df = calculate_FEE_column(blade, static_depth, CELL_SIZE);
                 total_force += df;
-                // Force opposes forward motion. Force on Right (w>0) pushes Right Side Back -> Turns Left (-Yaw)
+                // Force opposes forward motion. Force on Right (w<0 if Y-Left) pushes Right Side Back -> Turns Left (-Yaw)
                 total_yaw_moment -= df * w; 
             }
         }
@@ -569,8 +568,8 @@ void simulate_step(SoilEnv* env, float dt) {
         float dh = (total_vol_cut / num_cols) / (CELL_SIZE * CELL_SIZE);
         
         for (int j = 0; j < GRID_SIZE; j++) {
-            float cell_lat = j * CELL_SIZE;
-            float w = cell_lat - curr_lat;
+            float cell_y = j * CELL_SIZE;
+            float w = cell_y - curr_y;
             if (fabsf(w) > blade->width / 2.0f) continue;
             
             float curr_edge_x = curr_x - w * sinf(blade->yaw);
@@ -588,8 +587,8 @@ void simulate_step(SoilEnv* env, float dt) {
     // 4. Update Surcharge Q Dynamically
     float current_surcharge_vol = 0;
     for (int j = 0; j < GRID_SIZE; j++) {
-        float cell_lat = j * CELL_SIZE;
-        float w = cell_lat - curr_lat;
+        float cell_y = j * CELL_SIZE;
+        float w = cell_y - curr_y;
         if (fabsf(w) > blade->width / 2.0f) continue;
         
         float curr_edge_x = curr_x - w * sinf(blade->yaw);
@@ -605,8 +604,8 @@ void simulate_step(SoilEnv* env, float dt) {
 
 #ifndef BENCHMARK
     if (env->step_num % 5 == 0) {
-        printf("Step %d [X: %.2fm, Y: %.2fm]: Yaw: %5.2f° | Roll: %4.1f° | Slip: %3.0f%% | Q: %6.0f N | M_yaw: %6.0f Nm\n", 
-               env->step_num, blade->x, blade->lat_pos, blade->yaw * (180.0f/PI), 
+        printf("Step %d [X: %.2fm, Y: %.2fm, Z: %.2fm]: Yaw: %5.2f° | Roll: %4.1f° | Slip: %3.0f%% | Q: %6.0f N | M_yaw: %6.0f Nm\n", 
+               env->step_num, blade->x, blade->y, blade->z, blade->yaw * (180.0f/PI), 
                blade->roll * (180.0f/PI), slip_ratio * 100.0f, blade->surcharge_Q, blade->last_yaw_moment);
     }
 
@@ -615,7 +614,7 @@ void simulate_step(SoilEnv* env, float dt) {
         struct {
             int step;
             // Chassis Pose
-            float l_x, l_z, l_lat, yaw, pitch, roll;
+            float l_x, l_z, l_y, yaw, pitch, roll;
             // Joint States (Position, Velocity)
             float arm_pos, arm_vel;
             float pitch_pos, pitch_vel;
@@ -628,7 +627,7 @@ void simulate_step(SoilEnv* env, float dt) {
             float cell_size;
         } header = {
             env->step_num,
-            blade->loader_x, blade->loader_z, blade->loader_lat, blade->yaw, blade->pitch, blade->roll,
+            blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll,
             blade->arm_height, blade->vel_arm_height,
             blade->blade_pitch_rel, blade->vel_pitch_rel,
             blade->blade_roll_rel, blade->vel_roll_rel,
@@ -684,21 +683,21 @@ int main() {
         // Change actions periodically to test them out
         if (t < 200) {
             env->blade.effort_linear = 0.8f;
-            env->blade.effort_rotational = 0.2f;
-            env->blade.effort_lift = 0.0f; 
-            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_rotational = 0.0f;
+            env->blade.effort_lift = -0.01f; 
+            env->blade.effort_pitch = 0.1f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 200 && t < 400) {
             env->blade.effort_rotational = 0.0f;
-            env->blade.effort_lift = 0.0f; 
+            env->blade.effort_lift = 0.1f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 400 && t < 600) {
-            env->blade.effort_lift = 0.0f; 
+            env->blade.effort_lift = 0.1f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 600 && t < 800) {
-            env->blade.effort_lift = 0.0f; 
+            env->blade.effort_lift = 0.1f; 
             env->blade.effort_pitch = 0.0f;
             env->blade.effort_roll = 0.0f;
         } else if (t >= 800 && t < 1000) {

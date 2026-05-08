@@ -57,7 +57,7 @@ def main():
             
         header = struct.unpack(header_format, header_data)
         step = header[0]
-        (loader_x, loader_z, lat_pos, yaw, pitch, roll,
+        (loader_x, loader_z, loader_y, yaw, pitch, roll,
          arm_height, vel_arm,
          blade_pitch_rel, vel_pitch,
          blade_roll_rel, vel_roll,
@@ -137,11 +137,8 @@ def main():
         
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         
-        # loader_lat is passed in the header as lat_pos (header[3])
-        loader_lat = lat_pos 
-        
         rr.log("world/machine", rr.Transform3D(
-            translation=[loader_x, loader_lat, loader_z + loader_height / 2.0],
+            translation=[loader_x, loader_y, loader_z + loader_height / 2.0],
             rotation=rr.Quaternion(xyzw=rot_chassis)
         ))
         
