@@ -3,7 +3,7 @@
 // Global Soil Properties Definitions
 float env_c = 200.0f;      // Reduced from 1000.0f for more realistic loose soil
 float env_c_a = 500.0f;    
-float env_phi = 30.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f (typical sand)
+float env_phi = 40.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f (typical sand)
 float env_delta = 20.0f * (PI / 180.0f); 
 float env_gamma = 1500.0f * GRAVITY; 
 
@@ -244,6 +244,12 @@ float calculate_FEE_column(Blade* blade, float depth, float width) {
            env_c_a * depth * width * N_ca;
 }
 
+float calculate_max_traction() {
+    float track_area = 2.0f * TRACK_LENGTH * TRACK_WIDTH;
+    float machine_weight = MACHINE_MASS * GRAVITY;
+    return track_area * env_c + machine_weight * tanf(env_phi);
+}
+
 float env_get_reward(SoilEnv* env, float prev_error) {
     float current_error = 0;
     for (int i = 0; i < GRID_SIZE; i++) {
@@ -253,7 +259,7 @@ float env_get_reward(SoilEnv* env, float prev_error) {
         }
     }
     float reward = (prev_error - current_error);
-    float max_traction = 35000.0f;
+    float max_traction = calculate_max_traction();
     float slip_ratio = env->blade.last_force / max_traction;
     if (slip_ratio > 0.8f) reward -= (slip_ratio - 0.8f) * 10.0f;
     reward -= (env->blade.effort_linear * env->blade.effort_linear + 
@@ -325,18 +331,18 @@ void simulate_erosion(SoilEnv* env) {
 
 void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
-    float track_length = 2.5f, track_gauge = 1.8f, blade_offset_x = 2.0f; 
+    float blade_offset_x = 2.0f; 
     blade->loader_x = blade->x - blade_offset_x * cosf(blade->yaw);
     blade->loader_y = blade->y - blade_offset_x * sinf(blade->yaw);
     
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
-    float hL = track_length / 2.0f, hW = track_gauge / 2.0f;
+    float hL = TRACK_LENGTH / 2.0f, hW = TRACK_GAUGE / 2.0f;
     int num_samples = 11;
     float sum_z_left = 0, sum_z_right = 0, sum_xz_left = 0, sum_xz_right = 0, sum_x2 = 0;
     float compaction_rate = 0.15f;
 
     for (int i = 0; i < num_samples; i++) {
-        float lx = -hL + (track_length * i) / (num_samples - 1);
+        float lx = -hL + (TRACK_LENGTH * i) / (num_samples - 1);
         sum_x2 += lx * lx;
         float p_lx = blade->loader_x + lx * cos_y - hW * sin_y, p_ly = blade->loader_y + lx * sin_y + hW * cos_y;
         float p_rx = blade->loader_x + lx * cos_y + hW * sin_y, p_ry = blade->loader_y + lx * sin_y - hW * cos_y;
@@ -367,7 +373,7 @@ void update_kinematics(SoilEnv* env) {
     }
     blade->loader_z = (sum_z_left + sum_z_right) / (2.0f * num_samples);
     blade->pitch = (atan2f(sum_xz_left/sum_x2, 1.0f) + atan2f(sum_xz_right/sum_x2, 1.0f)) / 2.0f;
-    blade->roll = atan2f((sum_z_left - sum_z_right)/num_samples, track_gauge);
+    blade->roll = atan2f((sum_z_left - sum_z_right)/num_samples, TRACK_GAUGE);
     blade->z = blade->loader_z + blade_offset_x * sinf(blade->pitch) + blade->arm_height;
 }
 
@@ -378,7 +384,26 @@ void simulate_step(SoilEnv* env, float dt) {
 
     // Actuator Dynamics
     blade->v_linear = (blade->v_linear + ((blade->effort_linear * MAX_FORCE_LINEAR - blade->last_force) / MACHINE_MASS) * dt) / (1.0f + (LINEAR_DAMPING / MACHINE_MASS) * dt);
-    blade->v_rotational = (blade->v_rotational + ((blade->effort_rotational * MAX_TORQUE_ROTATIONAL + blade->last_yaw_moment) / MACHINE_INERTIA) * dt) / (1.0f + (ROTATIONAL_DAMPING / MACHINE_INERTIA) * dt);
+    
+    // Skid-steer track scrub friction (resists turning)
+    float mu_lat = 0.6f; // Lateral friction coefficient
+    float scrub_torque = (mu_lat * MACHINE_MASS * GRAVITY * TRACK_LENGTH) / 4.0f;
+    float net_yaw_torque = blade->effort_rotational * MAX_TORQUE_ROTATIONAL + blade->last_yaw_moment;
+    
+    if (fabsf(blade->v_rotational) < 0.05f) {
+        // Static friction regime
+        if (fabsf(net_yaw_torque) <= scrub_torque) {
+            net_yaw_torque = 0.0f;
+            blade->v_rotational = 0.0f;
+        } else {
+            net_yaw_torque -= (net_yaw_torque > 0 ? scrub_torque : -scrub_torque);
+        }
+    } else {
+        // Kinetic friction regime
+        net_yaw_torque -= (blade->v_rotational > 0 ? scrub_torque : -scrub_torque);
+    }
+    
+    blade->v_rotational = (blade->v_rotational + (net_yaw_torque / MACHINE_INERTIA) * dt) / (1.0f + (ROTATIONAL_DAMPING / MACHINE_INERTIA) * dt);
     
     // Arm Lift with Hydraulic Stiffness
     float external_lift_force = blade->last_force * 0.2f;
@@ -426,7 +451,7 @@ void simulate_step(SoilEnv* env, float dt) {
     blade->rake_angle = (45.0f * (PI/180.0f)) + blade->blade_pitch_rel + blade->pitch;
     precompute_FEE(blade->rake_angle, 0.0f);
 
-    float slip = blade->last_force / 35000.0f; 
+    float slip = blade->last_force / calculate_max_traction(); 
     if (slip < 0) {
         slip = 0;
     }
@@ -546,7 +571,7 @@ void simulate_step(SoilEnv* env, float dt) {
     }
     
     if (env->step_num % 10 == 0) {
-        float slip = blade->last_force / 35000.0f;
+        float slip = blade->last_force / calculate_max_traction();
         if (slip > 1.0f) slip = 1.0f;
         if (slip < 0.0f) slip = 0.0f;
         printf("Step: %d, Surcharge: %.2f N, Force: %.2f N, Slip: %.1f%%\n", env->step_num, blade->surcharge_Q, blade->last_force, slip * 100.0f);
@@ -575,7 +600,7 @@ int main() {
     printf("Benchmarking RL-Optimized Sim: %d steps in %.4f seconds (%.2f Hz)\n", steps, elapsed, steps / elapsed);
 #else
     printf("Starting 6DOF 3D Soil Simulation with Effort Control...\n");
-    for (int t = 0; t < 1000; t++) {
+    for (int t = 0; t < 1500; t++) {
         if (t < 200) {
             env->blade.effort_linear = 0.8f;
         }

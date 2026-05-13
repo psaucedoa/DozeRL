@@ -27,6 +27,11 @@
 #define MACHINE_MASS 4500.0f
 #define MACHINE_INERTIA 6000.0f
 
+// Machine Geometry Constants
+#define TRACK_LENGTH 2.5f
+#define TRACK_WIDTH 0.4f
+#define TRACK_GAUGE 1.8f
+
 #define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch
 #define ROLL_DAMPING 50000.0f  // Increased to slow down roll
@@ -124,6 +129,7 @@ SoilEnv* env_init();
 void env_free(SoilEnv* env);
 void env_reset(SoilEnv* env, int seed);
 float calculate_FEE_column(Blade* blade, float depth, float width);
+float calculate_max_traction();
 void simulate_erosion(SoilEnv* env);
 void update_kinematics(SoilEnv* env);
 void simulate_step(SoilEnv* env, float dt);

@@ -44,3 +44,16 @@ Rerun is used for 3D visualization.
 *   **Elevation Mapping:** Terrain is colored based on a fixed elevation range (0.5m to 2.0m) to ensure visual consistency during replay.
 *   **Machine State:** 6DOF kinematics (Pitch, Roll, Yaw) are visualized for both the chassis and the relative blade roll.
 *   **Control Model:** Effort-based (Torque/Force) control for 5 active degrees of freedom: Tracks (Linear/Rotational), Arm Lift, Blade Pitch, and Blade Roll. 
+
+
+## 6. Track Traction & Slip Model (Mohr-Coulomb) - IMPLEMENTED
+The maximum tractive effort $T_{max}$ the machine can generate before the tracks slip is calculated using the Mohr-Coulomb failure criterion:
+$$T_{max} = A \cdot c + W \cdot \tan(\phi)$$
+
+Where:
+*   $A$: Total contact area of the tracks (`2 * TRACK_LENGTH * TRACK_WIDTH`)
+*   $c$: Soil cohesion (`env_c`)
+*   $W$: Normal load / weight of the machine (`MACHINE_MASS * GRAVITY`)
+*   $\phi$: Soil internal friction angle (`env_phi`)
+
+Slip is then calculated as the ratio of resistive force to maximum traction ($F_{resist} / T_{max}$), dynamically linking machine mobility to the underlying soil properties.
