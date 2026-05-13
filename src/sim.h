@@ -30,7 +30,7 @@
 // Machine Geometry Constants
 #define TRACK_LENGTH 2.5f
 #define TRACK_WIDTH 0.4f
-#define TRACK_GAUGE 1.8f
+#define TRACK_GAUGE 1.5f
 
 #define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch

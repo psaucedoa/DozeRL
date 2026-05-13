@@ -336,10 +336,65 @@ void update_kinematics(SoilEnv* env) {
     blade->loader_y = blade->y - blade_offset_x * sinf(blade->yaw);
     
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
+    
+    // 1. Dynamic Compaction (Ground Pressure vs Bearing Capacity)
+    float tan_phi = tanf(env_phi);
+    if (tan_phi < 0.01f) tan_phi = 0.01f;
+    
+    // Terzaghi Bearing Capacity Factors
+    float N_q_b = expf(PI * tan_phi) * powf(tanf((PI / 4.0f) + (env_phi / 2.0f)), 2.0f);
+    float N_c_b = (N_q_b - 1.0f) / tan_phi;
+    float N_gamma_b = 2.0f * (N_q_b + 1.0f) * tan_phi;
+    
+    // Bearing capacity (q_u) in Pascals (N/m^2)
+    // Note: env_gamma is unit weight (N/m^3)
+    float q_u = env_c * N_c_b + 0.5f * env_gamma * TRACK_WIDTH * N_gamma_b;
+    float ground_pressure = (MACHINE_MASS * GRAVITY) / (2.0f * TRACK_LENGTH * TRACK_WIDTH);
+    
+    // Soil closer to failure compacts more rapidly
+    float compaction_rate = (ground_pressure / q_u) * 0.5f; 
+    if (compaction_rate > 0.8f) compaction_rate = 0.8f;
+    if (compaction_rate < 0.05f) compaction_rate = 0.05f;
+
+    // 2. Area-based Track Compaction
+    int margin = (int)((TRACK_LENGTH / 2.0f + 1.0f) / CELL_SIZE);
+    int min_i = (int)(blade->loader_x / CELL_SIZE) - margin; 
+    if (min_i < 0) min_i = 0;
+    int max_i = (int)(blade->loader_x / CELL_SIZE) + margin; 
+    if (max_i >= GRID_SIZE) max_i = GRID_SIZE - 1;
+    int min_j = (int)(blade->loader_y / CELL_SIZE) - margin; 
+    if (min_j < 0) min_j = 0;
+    int max_j = (int)(blade->loader_y / CELL_SIZE) + margin; 
+    if (max_j >= GRID_SIZE) max_j = GRID_SIZE - 1;
+
+    for (int i = min_i; i <= max_i; i++) {
+        for (int j = min_j; j <= max_j; j++) {
+            if (env->grid_L[i][j] < 0.001f) continue;
+            
+            float dx = (i * CELL_SIZE) - blade->loader_x;
+            float dy = (j * CELL_SIZE) - blade->loader_y;
+            
+            // Local loader coordinates (lx = front/back, ly = left/right)
+            float lx = dx * cos_y + dy * sin_y;
+            float ly = -dx * sin_y + dy * cos_y;
+            
+            if (fabsf(lx) <= TRACK_LENGTH / 2.0f) {
+                // Check if cell is strictly under the left or right track (leaving a gap)
+                if (fabsf(ly - TRACK_GAUGE / 2.0f) <= TRACK_WIDTH / 2.0f || 
+                    fabsf(ly + TRACK_GAUGE / 2.0f) <= TRACK_WIDTH / 2.0f) {
+                    
+                    float compacted = env->grid_L[i][j] * compaction_rate;
+                    env->grid_L[i][j] -= compacted;
+                    env->grid_H[i][j] += compacted / SWELL_RATIO;
+                }
+            }
+        }
+    }
+
+    // 3. Kinematics Measurement (11 points along track centerlines)
     float hL = TRACK_LENGTH / 2.0f, hW = TRACK_GAUGE / 2.0f;
     int num_samples = 11;
     float sum_z_left = 0, sum_z_right = 0, sum_xz_left = 0, sum_xz_right = 0, sum_x2 = 0;
-    float compaction_rate = 0.15f;
 
     for (int i = 0; i < num_samples; i++) {
         float lx = -hL + (TRACK_LENGTH * i) / (num_samples - 1);
@@ -352,19 +407,9 @@ void update_kinematics(SoilEnv* env) {
         
         float zl = 1.0f, zr = 1.0f;
         if (ixl >= 0 && ixl < GRID_SIZE && iyl >= 0 && iyl < GRID_SIZE) {
-            if (env->grid_L[ixl][iyl] > 0.001f) {
-                float compacted = env->grid_L[ixl][iyl] * compaction_rate;
-                env->grid_L[ixl][iyl] -= compacted;
-                env->grid_H[ixl][iyl] += compacted / SWELL_RATIO;
-            }
             zl = env->grid_H[ixl][iyl] + env->grid_L[ixl][iyl];
         }
         if (ixr >= 0 && ixr < GRID_SIZE && iyr >= 0 && iyr < GRID_SIZE) {
-            if (env->grid_L[ixr][iyr] > 0.001f) {
-                float compacted = env->grid_L[ixr][iyr] * compaction_rate;
-                env->grid_L[ixr][iyr] -= compacted;
-                env->grid_H[ixr][iyr] += compacted / SWELL_RATIO;
-            }
             zr = env->grid_H[ixr][iyr] + env->grid_L[ixr][iyr];
         }
         
@@ -601,14 +646,17 @@ int main() {
 #else
     printf("Starting 6DOF 3D Soil Simulation with Effort Control...\n");
     for (int t = 0; t < 1500; t++) {
-        if (t < 200) {
+        if (t < 100) {
             env->blade.effort_linear = 0.8f;
         }
         if (t < 100) {
-            env->blade.effort_lift = -0.1f;
+            env->blade.effort_lift = -0.05f;
         }
         if (t > 100) {
             env->blade.effort_lift = 0.0f;
+        }
+        if (t > 1000) {
+            env->blade.effort_lift = 0.5f;
         }
         simulate_step(env, 0.01f);
     }
