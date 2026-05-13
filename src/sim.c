@@ -273,13 +273,14 @@ void simulate_erosion(SoilEnv* env) {
             }
         }
         
-        int dx[] = {1, -1, 0, 0}, dy[] = {0, 0, 1, -1};
+        int dx[] = {1, -1, 0, 0, 1, 1, -1, -1};
+        int dy[] = {0, 0, 1, -1, 1, -1, 1, -1};
         for (int i = min_i + 1; i < max_i; i++) {
             for (int j = min_j + 1; j < max_j; j++) {
                 if (env->grid_L[i][j] <= 1e-4f) continue;
                 float total_h = env->grid_H[i][j] + env->grid_L[i][j];
                 
-                for(int d=0; d<4; d++) {
+                for(int d=0; d<8; d++) {
                     int ni = i + dx[d], nj = j + dy[d];
                     
                     // Rigid machine collision box
@@ -294,8 +295,9 @@ void simulate_erosion(SoilEnv* env) {
                     
                     float neighbor_total_h = env->grid_H[ni][nj] + env->grid_L[ni][nj];
                     float dH = total_h - neighbor_total_h;
-                    if (dH > CELL_SIZE * tanf(env_phi)) {
-                        float slip = (dH - CELL_SIZE * tanf(env_phi)) * 0.2f;
+                    float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f); // sqrt(2) for diagonals
+                    if (dH > dist * tanf(env_phi)) {
+                        float slip = (dH - dist * tanf(env_phi)) * 0.2f;
                         if (slip > tempL[i][j]) slip = tempL[i][j];
                         tempL[i][j] -= slip; tempL[ni][nj] += slip; total_h -= slip;
                     }
