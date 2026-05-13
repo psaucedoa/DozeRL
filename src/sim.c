@@ -121,13 +121,46 @@ void env_reset(SoilEnv* env, int seed) {
     float start_x = 5.0f + ((float)rand() / RAND_MAX) * 5.0f;
     float start_y = 5.0f + ((float)rand() / RAND_MAX) * 15.0f;
     float angle = ((float)rand() / RAND_MAX - 0.5f) * (PI / 4.0f);
-    float slot_L = 4.0f + ((float)rand() / RAND_MAX) * 6.0f; // 4.0m to 10.0m
-    float slot_W = env->blade.width; // Match blade width exactly
-    float slot_D = 0.1f + ((float)rand() / RAND_MAX) * 0.4f; // 0.1m to 0.5m
+
+    // Determine Pile Parameters First
+    // Stout shape with a flat top and well-defined boundaries.
+    float k = 0.4f; 
+    float pile_h = 0.5f + ((float)rand() / RAND_MAX) * 1.0f; // 0.5m to 1.5m
+
+    // Calculate base footprint to roughly match the soil's angle of repose (env_phi).
+    // The slope of the frustum is pile_h / (b_base * (1 - k)).
+    // Setting this to tan(env_phi) gives:
+    float tan_phi = tanf(env_phi);
+    if (tan_phi < 0.1f) tan_phi = 0.1f; // Protect against flat soil randomization
+
+    float b_base = pile_h / ((1.0f - k) * tan_phi);
+    
+    // Clamp footprint to stay within realistic machine/grid bounds
+    float min_b = (env->blade.width * 1.1f) / 2.0f;
+    float max_b = (GRID_SIZE * CELL_SIZE) * 0.25f; // Max 25% of world width
+    if (b_base < min_b) b_base = min_b;
+    if (b_base > max_b) b_base = max_b;
+
+    float a_base = b_base * 0.6f; // Shorter along the pushing direction
+
+    // Volume of an elliptical frustum: V = (1/3) * PI * a * b * (1 + k + k^2) * H
+    float v_unit = (PI * a_base * b_base * (1.0f + k + k*k)) / 3.0f;
+    float target_pile_vol = v_unit * pile_h;
+    float required_slot_vol = target_pile_vol / SWELL_RATIO;
+
+    // Scale slot dimensions to match the required volume
+    float slot_W = env->blade.width;
+    float slot_D = 0.2f; // target depth
+    float slot_L = required_slot_vol / (slot_W * slot_D);
+
+    // If slot is too long, clamp length and increase depth to match volume
+    if (slot_L > 12.0f) {
+        slot_L = 12.0f;
+        slot_D = required_slot_vol / (slot_L * slot_W);
+    }
 
     float cos_a = cosf(angle);
     float sin_a = sinf(angle);
-    float total_slot_vol = 0;
 
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -137,40 +170,12 @@ void env_reset(SoilEnv* env, int seed) {
             float ly = -dx * sin_a + dy * cos_a;
             if (lx >= 0 && lx <= slot_L && fabsf(ly) <= slot_W / 2.0f) {
                 env->grid_G[i][j] -= slot_D;
-                total_slot_vol += slot_D * CELL_SIZE * CELL_SIZE;
             }
         }
     }
 
     float pile_center_x = start_x + (slot_L + 2.0f) * cos_a;
     float pile_center_y = start_y + (slot_L + 2.0f) * sin_a;
-    
-    // Oval / Gaussian shaped pile, longer perpendicular to the slot
-    float target_pile_vol = total_slot_vol * SWELL_RATIO;
-    
-    // Target a visible width of ~1.3x blade width. 
-    // Visible Gaussian width is ~6*sigma, so sigma_y = (1.3 * blade.width) / 6.0
-    float base_sigma_y = (env->blade.width * 1.3f) / 6.0f; 
-    // Make the pile shorter along the pushing direction (e.g. 0.6x the perpendicular spread)
-    float base_sigma_x = base_sigma_y * 0.6f; 
-    
-    float pile_amplitude = target_pile_vol / (2.0f * PI * base_sigma_x * base_sigma_y);
-    float sigma_x = base_sigma_x;
-    float sigma_y = base_sigma_y;
-    
-    // Clamp pile height between 0.5m and 1.5m to keep it realistic.
-    // If it violates bounds, scale the footprint (both sigmas) equally to conserve volume.
-    if (pile_amplitude > 1.5f) {
-        float scale = sqrtf(pile_amplitude / 1.5f);
-        sigma_x *= scale;
-        sigma_y *= scale;
-        pile_amplitude = 1.5f;
-    } else if (pile_amplitude < 0.5f) {
-        float scale = sqrtf(pile_amplitude / 0.5f);
-        sigma_x *= scale;
-        sigma_y *= scale;
-        pile_amplitude = 0.5f;
-    }
 
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -181,11 +186,17 @@ void env_reset(SoilEnv* env, int seed) {
             float lx = dx * cos_a + dy * sin_a;
             float ly = -dx * sin_a + dy * cos_a;
             
-            float exponent = -((lx * lx) / (2.0f * sigma_x * sigma_x) + (ly * ly) / (2.0f * sigma_y * sigma_y));
-            float h_add = pile_amplitude * expf(exponent);
+            // Normalized radius for the ellipse
+            float r = sqrtf((lx * lx) / (a_base * a_base) + (ly * ly) / (b_base * b_base));
             
-            // Prevent infinite tails
-            if (h_add > 0.01f) {
+            float h_add = 0;
+            if (r <= k) {
+                h_add = pile_h; // Flat top
+            } else if (r < 1.0f) {
+                h_add = pile_h * (1.0f - r) / (1.0f - k); // Linear slope
+            }
+            
+            if (h_add > 0.001f) {
                 env->grid_G[i][j] += h_add;
             }
         }
@@ -533,6 +544,14 @@ void simulate_step(SoilEnv* env, float dt) {
         }
         fwrite(flat, 4, GRID_SIZE * GRID_SIZE, outfile);
     }
+    
+    if (env->step_num % 10 == 0) {
+        float slip = blade->last_force / 35000.0f;
+        if (slip > 1.0f) slip = 1.0f;
+        if (slip < 0.0f) slip = 0.0f;
+        printf("Step: %d, Surcharge: %.2f N, Force: %.2f N, Slip: %.1f%%\n", env->step_num, blade->surcharge_Q, blade->last_force, slip * 100.0f);
+    }
+
     env->step_num++;
 }
 
