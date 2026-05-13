@@ -8,7 +8,7 @@
 
 #define GRID_SIZE 300
 #define PI 3.14159265358979323846f
-#define CELL_SIZE 0.1f 
+#define CELL_SIZE 0.2f 
 
 #define SWELL_RATIO 1.2f
 #define LOOSE_SOIL_DENSITY 1300.0f
@@ -42,7 +42,7 @@
 #define ROLL_MIN (-20.0f * (PI / 180.0f))
 #define ROLL_MAX (20.0f * (PI / 180.0f))
 
-#define SPATIAL_OBS_SIZE 32
+#define SPATIAL_OBS_SIZE 50
 
 typedef struct {
     // Spatial Origin (Center of Blade)
@@ -94,13 +94,14 @@ typedef struct {
 typedef struct {
     float grid_H[GRID_SIZE][GRID_SIZE];
     float grid_L[GRID_SIZE][GRID_SIZE];
+    float grid_G[GRID_SIZE][GRID_SIZE]; // Goal Map
     Blade blade;
     int step_num;
 } SoilEnv;
 
 typedef struct {
     float proprioceptive[11];
-    float spatial[SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
+    float spatial[2][SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
 } Observation;
 
 // Global Soil Properties (declared extern here, defined in sim.c)
@@ -117,6 +118,7 @@ extern FILE* outfile;
 
 // Function Prototypes
 void env_get_observation(SoilEnv* env, Observation* obs);
+float env_get_reward(SoilEnv* env, float prev_error);
 void precompute_FEE(float rake_angle, float alpha);
 SoilEnv* env_init();
 void env_free(SoilEnv* env);

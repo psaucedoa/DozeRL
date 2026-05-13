@@ -39,15 +39,23 @@ For an agent to learn, it needs a "window" into the world.
 *   **Track State:** Linear velocity `v_linear` and rotational velocity `v_rotational`. (Note: Real tracks only report velocity, not position).
 *   **Internal State:** Surcharge `surcharge_Q` and total resistive force `last_force`.
 
-### Spatial Observations (Heightmap Image)
-*   **Local Terrain:** A small cropped window (e.g., 32x32 cells) of the heightmap centered immediately in front of the blade. This allows the agent to "see" the pile it is pushing.
+### Spatial Observations (Multi-Channel Heightmap)
+A 50x50 cropped window (10m x 10m at 0.2m resolution) centered immediately in front of the blade.
+*   **Channel 0 (Terrain):** Current elevation (`grid_H + grid_L`) relative to chassis elevation.
+*   **Channel 1 (Goal):** Target elevation (`grid_G`) relative to chassis elevation.
 
 ## 4. Reward Function Design
-To push soil effectively, the agent needs a dense reward signal:
-*   **Primary Reward:** Volume of soil moved in the target direction ($+ \Delta Q \cdot v_{forward}$).
-*   **Penalty - Stall:** Negative reward if `slip_ratio > 0.8` (tracks spinning but not moving).
-*   **Penalty - Energy:** Small penalty proportional to $|Action|^2$ to encourage smooth control.
-*   **Penalty - Deviation:** Penalty for yaw drift from the intended path.
+The agent is tasked with transforming the current terrain into a target "Goal Map" consisting of a **Slot** (where soil is removed) and a **Pile** (where soil is deposited).
+
+### Goal Map Generation
+*   **Slot:** A rectangular trench of random dimensions, position, and orientation.
+*   **Pile:** A mound located at the end of the slot.
+*   **Consistency:** The volume of the pile matches the volume of the slot, adjusted by `SWELL_RATIO` (puffiness).
+
+### Reward Components
+*   **Alignment Reward (Dense):** $R_{align} = \text{Error}_{t-1} - \text{Error}_t$, where $\text{Error} = \sum |(H+L) - G|$ within the active zone. This rewards any change that brings the terrain closer to the goal.
+*   **Stall Penalty:** $R_{stall} = -\max(0, \text{slip\_ratio} - 0.8)$. Penalizes tracks spinning without moving.
+*   **Energy Penalty:** $R_{energy} = - \sum |Action|^2 \cdot \lambda$. Encourages efficient and smooth control.
 
 ## 5. PufferLib C-Binding (Python Wrapper)
 Use `ctypes` or `pybind11` to expose the following C functions to Python:
