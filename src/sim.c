@@ -121,7 +121,7 @@ void env_reset(SoilEnv* env, int seed) {
     float start_x = 5.0f + ((float)rand() / RAND_MAX) * 5.0f;
     float start_y = 5.0f + ((float)rand() / RAND_MAX) * 15.0f;
     float angle = ((float)rand() / RAND_MAX - 0.5f) * (PI / 4.0f);
-    float slot_L = 4.0f + ((float)rand() / RAND_MAX) * 4.0f; // 4.0m to 8.0m
+    float slot_L = 4.0f + ((float)rand() / RAND_MAX) * 6.0f; // 4.0m to 10.0m
     float slot_W = env->blade.width; // Match blade width exactly
     float slot_D = 0.1f + ((float)rand() / RAND_MAX) * 0.4f; // 0.1m to 0.5m
 
@@ -158,13 +158,13 @@ void env_reset(SoilEnv* env, int seed) {
     float sigma_x = base_sigma_x;
     float sigma_y = base_sigma_y;
     
-    // Clamp pile height between 0.5m and 2.0m to keep it realistic.
+    // Clamp pile height between 0.5m and 1.5m to keep it realistic.
     // If it violates bounds, scale the footprint (both sigmas) equally to conserve volume.
-    if (pile_amplitude > 2.0f) {
-        float scale = sqrtf(pile_amplitude / 2.0f);
+    if (pile_amplitude > 1.5f) {
+        float scale = sqrtf(pile_amplitude / 1.5f);
         sigma_x *= scale;
         sigma_y *= scale;
-        pile_amplitude = 2.0f;
+        pile_amplitude = 1.5f;
     } else if (pile_amplitude < 0.5f) {
         float scale = sqrtf(pile_amplitude / 0.5f);
         sigma_x *= scale;
@@ -539,7 +539,7 @@ int main() {
     outfile = fopen("out/sim_out.bin", "wb");
     if (!outfile) return 1;
 #endif
-    SoilEnv* env = env_init(); env_reset(env, 42);
+    SoilEnv* env = env_init(); env_reset(env, time(NULL));
     precompute_FEE(env->blade.rake_angle, 0.0f); update_kinematics(env);
     
 #ifdef BENCHMARK

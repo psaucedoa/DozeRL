@@ -6,7 +6,7 @@
 #include <math.h>
 #include <time.h>
 
-#define GRID_SIZE 300
+#define GRID_SIZE 150
 #define PI 3.14159265358979323846f
 #define CELL_SIZE 0.2f 
 
