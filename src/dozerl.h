@@ -394,6 +394,18 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
         }
     }
     float reward = (prev_error - current_error);
+    
+    // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
+    float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.1f;
+    if (push_reward > 0.0f) {
+        reward += push_reward;
+    }
+
+    // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
+    if (fabsf(env->blade.v_linear) < 0.05f && fabsf(env->blade.v_rotational) < 0.05f) {
+        reward -= 0.05f;
+    }
+
     float max_traction = calculate_max_traction();
     float slip_ratio = env->blade.last_force / max_traction;
     if (slip_ratio > 0.99f) reward -= (slip_ratio - 0.99f) * 10.0f;
@@ -808,9 +820,9 @@ void c_step(SoilEnv* env) {
     env->blade.effort_roll       = clamp_action(env->actions[4]);
     env->blade.effort_yaw        = clamp_action(env->actions[5]);
 
-    // Sub-stepping: simulate 10 steps of 0.01s for stability and control persistency (10Hz control loop with 100Hz physics)
-    for (int sub = 0; sub < 10; sub++) {
-        simulate_step(env, 0.01f);
+    // Sub-stepping: simulate 3 steps of 0.033333s for stability and control dynamics (10Hz control loop with 30Hz physics)
+    for (int sub = 0; sub < 3; sub++) {
+        simulate_step(env, 0.033333f);
     }
 
     env->rewards[0] = env_get_reward(env, prev_error);
