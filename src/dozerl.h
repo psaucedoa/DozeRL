@@ -808,8 +808,8 @@ void c_step(SoilEnv* env) {
     env->blade.effort_roll       = clamp_action(env->actions[4]);
     env->blade.effort_yaw        = clamp_action(env->actions[5]);
 
-    // Sub-stepping: simulate 5 steps of 0.01s for stability and control persistency
-    for (int sub = 0; sub < 5; sub++) {
+    // Sub-stepping: simulate 10 steps of 0.01s for stability and control persistency (10Hz control loop with 100Hz physics)
+    for (int sub = 0; sub < 10; sub++) {
         simulate_step(env, 0.01f);
     }
 
@@ -818,8 +818,8 @@ void c_step(SoilEnv* env) {
 
     env_get_observation(env, (Observation*)env->observations);
 
-    // Terminal condition (300 step limit)
-    if (env->tick >= 300) {
+    // Terminal condition (150 step limit, representing 15 seconds)
+    if (env->tick >= 150) {
         env->terminals[0] = 1.0f;
         add_log(env);
         c_reset(env);

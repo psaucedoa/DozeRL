@@ -51,7 +51,7 @@ void demo(const char* checkpoint_path) {
     printf("Benchmarking DozeRL Sim via c_step: %d steps in %.4f seconds (%.2f Hz)\n", steps, elapsed, steps / elapsed);
 #else
     printf("Starting 6DOF 3D Soil Simulation...\n");
-    for (int t = 0; t < 300; t++) {
+    for (int t = 0; t < 150; t++) {
         if (net != NULL) {
             // Forward pass through the trained policy
             forward_puffernet(net, env->observations, env->actions);
@@ -61,19 +61,19 @@ void demo(const char* checkpoint_path) {
                 env->actions[i] = 0.0f;
             }
 
-            if (t < 20) {
+            if (t < 10) {
                 env->actions[0] = 0.8f;  // effort_linear
                 env->actions[3] = 0.5f;  // effort_pitch
             }
-            if (t < 20) {
+            if (t < 10) {
                 env->actions[3] = 0.0f;
                 env->actions[2] = -0.06f; // effort_lift
             }
-            if (t >= 20) {
+            if (t >= 10) {
                 env->actions[0] = 0.8f;  // effort_linear
                 env->actions[2] = 0.0f;
             }
-            if (t > 200) {
+            if (t > 100) {
                 env->actions[2] = 0.5f;  // effort_lift
             }
         }
