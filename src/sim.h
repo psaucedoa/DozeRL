@@ -15,17 +15,17 @@
 #define GRAVITY 9.81f
 
 // Actuator Dynamics Constants
-#define MAX_FORCE_LIFT 50000.0f
+#define MAX_FORCE_LIFT 120000.0f
 #define MAX_TORQUE_PITCH 15000.0f
 #define MAX_TORQUE_ROLL 15000.0f
-#define MAX_FORCE_LINEAR 40000.0f
-#define MAX_TORQUE_ROTATIONAL 30000.0f
+#define MAX_FORCE_LINEAR 100000.0f
+#define MAX_TORQUE_ROTATIONAL 80000.0f
 
 #define ARM_MASS 800.0f
 #define PITCH_INERTIA 200.0f
 #define ROLL_INERTIA 200.0f
-#define MACHINE_MASS 4500.0f
-#define MACHINE_INERTIA 6000.0f
+#define MACHINE_MASS 18000.0f
+#define MACHINE_INERTIA 25000.0f
 
 // Machine Geometry Constants
 #define TRACK_LENGTH 2.5f
@@ -35,8 +35,8 @@
 #define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch
 #define ROLL_DAMPING 50000.0f  // Increased to slow down roll
-#define LINEAR_DAMPING 10000.0f
-#define ROTATIONAL_DAMPING 15000.0f
+#define LINEAR_DAMPING 30000.0f
+#define ROTATIONAL_DAMPING 40000.0f
 
 #define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
 

@@ -203,6 +203,8 @@ void env_reset(SoilEnv* env, int seed) {
     }
 
     // Blade State
+    env->blade.loader_x = start_x - 4.0f * cos_a;
+    env->blade.loader_y = start_y - 4.0f * sin_a;
     env->blade.x = start_x - 2.0f * cos_a;
     env->blade.y = start_y - 2.0f * sin_a;
     env->blade.z = 0.8f;
@@ -227,8 +229,6 @@ void env_reset(SoilEnv* env, int seed) {
     env->blade.vel_pitch_rel = 0.0f;
     env->blade.vel_roll_rel = 0.0f;
     env->blade.vel_yaw_rel = 0.0f;
-    env->blade.loader_x = 0.0f;
-    env->blade.loader_y = 0.0f;
     env->blade.loader_z = 0.0f;
     env->blade.last_force = 0.0f;
     env->blade.last_yaw_moment = 0.0f;
@@ -356,8 +356,8 @@ void simulate_erosion(SoilEnv* env) {
 void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
     float blade_offset_x = 2.0f; 
-    blade->loader_x = blade->x - blade_offset_x * cosf(blade->yaw);
-    blade->loader_y = blade->y - blade_offset_x * sinf(blade->yaw);
+    blade->x = blade->loader_x + blade_offset_x * cosf(blade->yaw);
+    blade->y = blade->loader_y + blade_offset_x * sinf(blade->yaw);
     
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
     
@@ -528,8 +528,8 @@ void simulate_step(SoilEnv* env, float dt) {
         slip = 1;
     }
     blade->yaw += blade->v_rotational * dt;
-    blade->x += blade->v_linear * (1.0f - slip) * cosf(blade->yaw) * dt;
-    blade->y += blade->v_linear * (1.0f - slip) * sinf(blade->yaw) * dt;
+    blade->loader_x += blade->v_linear * (1.0f - slip) * cosf(blade->yaw) * dt;
+    blade->loader_y += blade->v_linear * (1.0f - slip) * sinf(blade->yaw) * dt;
 
     update_kinematics(env);
 
@@ -620,7 +620,7 @@ void simulate_step(SoilEnv* env, float dt) {
         }
     }
     blade->surcharge_Q = current_surcharge_vol * LOOSE_SOIL_DENSITY * GRAVITY;
-    if (outfile && env->step_num % 5 == 0) {
+    if (outfile && env->step_num % 1 == 0) {
         struct { int step; float p[16]; int gs; float cs; } h = { env->step_num, {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, GRID_SIZE, CELL_SIZE };
         fwrite(&h, sizeof(h), 1, outfile);
         float flat[GRID_SIZE * GRID_SIZE];

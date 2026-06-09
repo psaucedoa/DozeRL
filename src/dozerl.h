@@ -16,17 +16,17 @@
 #define GRAVITY 9.81f
 
 // Actuator Dynamics Constants
-#define MAX_FORCE_LIFT 50000.0f
+#define MAX_FORCE_LIFT 120000.0f
 #define MAX_TORQUE_PITCH 15000.0f
 #define MAX_TORQUE_ROLL 15000.0f
-#define MAX_FORCE_LINEAR 40000.0f
-#define MAX_TORQUE_ROTATIONAL 30000.0f
+#define MAX_FORCE_LINEAR 100000.0f
+#define MAX_TORQUE_ROTATIONAL 80000.0f
 
 #define ARM_MASS 800.0f
 #define PITCH_INERTIA 200.0f
 #define ROLL_INERTIA 200.0f
-#define MACHINE_MASS 4500.0f
-#define MACHINE_INERTIA 6000.0f
+#define MACHINE_MASS 18000.0f
+#define MACHINE_INERTIA 25000.0f
 
 // Machine Geometry Constants
 #define TRACK_LENGTH 2.5f
@@ -36,8 +36,8 @@
 #define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch
 #define ROLL_DAMPING 50000.0f  // Increased to slow down roll
-#define LINEAR_DAMPING 10000.0f
-#define ROTATIONAL_DAMPING 15000.0f
+#define LINEAR_DAMPING 30000.0f
+#define ROTATIONAL_DAMPING 40000.0f
 
 #define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
 
@@ -335,6 +335,8 @@ static inline void env_reset(SoilEnv* env) {
     }
 
     // Blade State
+    env->blade.loader_x = start_x - 4.0f * cos_a;
+    env->blade.loader_y = start_y - 4.0f * sin_a;
     env->blade.x = start_x - 2.0f * cos_a;
     env->blade.y = start_y - 2.0f * sin_a;
     env->blade.z = 0.8f;
@@ -359,8 +361,6 @@ static inline void env_reset(SoilEnv* env) {
     env->blade.vel_pitch_rel = 0.0f;
     env->blade.vel_roll_rel = 0.0f;
     env->blade.vel_yaw_rel = 0.0f;
-    env->blade.loader_x = 0.0f;
-    env->blade.loader_y = 0.0f;
     env->blade.loader_z = 0.0f;
     env->blade.last_force = 0.0f;
     env->blade.last_yaw_moment = 0.0f;
@@ -497,8 +497,8 @@ static inline void simulate_erosion(SoilEnv* env) {
 static inline void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
     float blade_offset_x = 2.0f; 
-    blade->loader_x = blade->x - blade_offset_x * cosf(blade->yaw);
-    blade->loader_y = blade->y - blade_offset_x * sinf(blade->yaw);
+    blade->x = blade->loader_x + blade_offset_x * cosf(blade->yaw);
+    blade->y = blade->loader_y + blade_offset_x * sinf(blade->yaw);
     
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
     
@@ -637,8 +637,8 @@ static inline void simulate_step(SoilEnv* env, float dt) {
     if (slip < 0) slip = 0;
     if (slip > 1) slip = 1;
     blade->yaw += blade->v_rotational * dt;
-    blade->x += blade->v_linear * (1.0f - slip) * cosf(blade->yaw) * dt;
-    blade->y += blade->v_linear * (1.0f - slip) * sinf(blade->yaw) * dt;
+    blade->loader_x += blade->v_linear * (1.0f - slip) * cosf(blade->yaw) * dt;
+    blade->loader_y += blade->v_linear * (1.0f - slip) * sinf(blade->yaw) * dt;
 
     update_kinematics(env);
 
