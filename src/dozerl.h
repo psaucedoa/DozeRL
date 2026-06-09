@@ -396,7 +396,7 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     float reward = (prev_error - current_error);
     float max_traction = calculate_max_traction();
     float slip_ratio = env->blade.last_force / max_traction;
-    if (slip_ratio > 0.8f) reward -= (slip_ratio - 0.8f) * 10.0f;
+    if (slip_ratio > 0.99f) reward -= (slip_ratio - 0.99f) * 10.0f;
     reward -= (env->blade.effort_linear * env->blade.effort_linear + 
                env->blade.effort_lift * env->blade.effort_lift +
                env->blade.effort_pitch * env->blade.effort_pitch) * 0.01f;
@@ -818,8 +818,19 @@ void c_step(SoilEnv* env) {
 
     env_get_observation(env, (Observation*)env->observations);
 
-    // Terminal condition (150 step limit, representing 15 seconds)
-    if (env->tick >= 150) {
+    // Calculate current terrain error reduction performance
+    float current_error = 0;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            float diff = (env->grid_H[i][j] + env->grid_L[i][j]) - env->grid_G[i][j];
+            current_error += fabsf(diff);
+        }
+    }
+    float error_reduction = env->initial_error - current_error;
+    float current_perf = error_reduction / (env->initial_error + 1e-5f);
+
+    // Terminal condition (600 step limit, or 90% goal map built success)
+    if (env->tick >= 600 || current_perf >= 0.90f) {
         env->terminals[0] = 1.0f;
         add_log(env);
         c_reset(env);
