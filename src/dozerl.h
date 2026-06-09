@@ -725,7 +725,7 @@ static inline void simulate_step(SoilEnv* env, float dt) {
         }
     }
     blade->surcharge_Q = current_surcharge_vol * LOOSE_SOIL_DENSITY * GRAVITY;
-    if (outfile && env->step_num % 5 == 0) {
+    if (outfile && env->step_num % 1 == 0) {
         struct { int step; float p[16]; int gs; float cs; } h = { env->step_num, {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, GRID_SIZE, CELL_SIZE };
         fwrite(&h, sizeof(h), 1, outfile);
         float flat[GRID_SIZE * GRID_SIZE];
