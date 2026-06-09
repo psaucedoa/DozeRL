@@ -1,9 +1,9 @@
 #include "sim.h"
 
 // Global Soil Properties Definitions
-float env_c = 200.0f;      // Reduced from 1000.0f for more realistic loose soil
+float env_c = 500.0f;      // Reduced from 1000.0f for more realistic loose soil
 float env_c_a = 500.0f;    
-float env_phi = 40.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f (typical sand)
+float env_phi = 30.0f * (PI / 180.0f); // Increased from 10.0f to 30.0f
 float env_delta = 20.0f * (PI / 180.0f); 
 float env_gamma = 1500.0f * GRAVITY; 
 
@@ -235,13 +235,16 @@ void env_reset(SoilEnv* env, int seed) {
     env->step_num = 0;
 }
 
-float calculate_FEE_column(Blade* blade, float depth, float width) {
-    if (depth <= 0.0f) return 0.0f;
+float calculate_FEE_column(Blade* blade, float hard_depth, float total_depth, float width) {
+    if (total_depth <= 0.0f) return 0.0f;
     float q = blade->surcharge_Q * (width / blade->width);
-    return env_gamma * depth * depth * width * N_gamma +
-           env_c * depth * width * N_c +
-           q * N_Q +
-           env_c_a * depth * width * N_ca;
+    float df = q * N_Q;
+    if (hard_depth > 0.0f) {
+        df += env_gamma * hard_depth * hard_depth * width * N_gamma +
+              env_c * hard_depth * width * N_c +
+              env_c_a * hard_depth * width * N_ca;
+    }
+    return df;
 }
 
 float calculate_max_traction() {
@@ -281,6 +284,7 @@ void simulate_erosion(SoilEnv* env) {
     if (max_j >= GRID_SIZE) max_j = GRID_SIZE - 1;
 
     float loader_length = 2.0f;
+    float tan_phi = tanf(env_phi);
 
     for (int iter = 0; iter < 3; iter++) {
         float tempL[GRID_SIZE][GRID_SIZE];
@@ -313,10 +317,30 @@ void simulate_erosion(SoilEnv* env) {
                     float neighbor_total_h = env->grid_H[ni][nj] + env->grid_L[ni][nj];
                     float dH = total_h - neighbor_total_h;
                     float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f); // sqrt(2) for diagonals
-                    if (dH > dist * tanf(env_phi)) {
-                        float slip = (dH - dist * tanf(env_phi)) * 0.2f;
-                        if (slip > tempL[i][j]) slip = tempL[i][j];
-                        tempL[i][j] -= slip; tempL[ni][nj] += slip; total_h -= slip;
+                    
+                    if (dH > 0.0f) {
+                        float t = dH / dist;
+                        float L_val = tempL[i][j];
+                        if (L_val < 1e-5f) L_val = 1e-5f;
+                        float K = env_c / (LOOSE_SOIL_DENSITY * GRAVITY * L_val);
+                        float t_limit = tan_phi;
+                        
+                        if (K >= 1e-5f) {
+                            float disc = 1.0f - 4.0f * K * (tan_phi + K);
+                            if (disc > 0.0f) {
+                                t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
+                            } else {
+                                t_limit = 1e9f; // Unconditionally stable
+                            }
+                        }
+                        
+                        if (t > t_limit) {
+                            float slip = (t - t_limit) * dist * 0.2f;
+                            if (slip > tempL[i][j]) slip = tempL[i][j];
+                            tempL[i][j] -= slip;
+                            tempL[ni][nj] += slip;
+                            total_h -= slip;
+                        }
                     }
                 }
             }
@@ -506,9 +530,9 @@ void simulate_step(SoilEnv* env, float dt) {
     blade->yaw += blade->v_rotational * dt;
     blade->x += blade->v_linear * (1.0f - slip) * cosf(blade->yaw) * dt;
     blade->y += blade->v_linear * (1.0f - slip) * sinf(blade->yaw) * dt;
-    
+
     update_kinematics(env);
-    
+
     float total_vol_cut = 0, total_force = 0, total_yaw_moment = 0;
     for (int j = 0; j < GRID_SIZE; j++) {
         float w = (j * CELL_SIZE) - blade->y; 
@@ -536,7 +560,7 @@ void simulate_step(SoilEnv* env, float dt) {
             }
             float interp_center_z = prev_z + t * (blade->z - prev_z);
             float blade_elev = interp_center_z + w * sinf(blade->roll + blade->blade_roll_rel);
-            
+
             float total_h = env->grid_H[i][j] + env->grid_L[i][j];
             float depth = total_h - blade_elev;
             if (depth > 0) {
@@ -551,15 +575,16 @@ void simulate_step(SoilEnv* env, float dt) {
         }
         int front = end + 1;
         if (front < GRID_SIZE) {
-            float depth = env->grid_H[front][j] - (blade->z + w * sinf(blade->roll + blade->blade_roll_rel));
-            if (depth > 0) {
-                float df = calculate_FEE_column(blade, depth, CELL_SIZE);
-                total_force += df; total_yaw_moment -= df * w;
-            }
+            float blade_elev = blade->z + w * sinf(blade->roll + blade->blade_roll_rel);
+            float total_h = env->grid_H[front][j] + env->grid_L[front][j];
+            float total_depth = total_h - blade_elev;
+            float hard_depth = env->grid_H[front][j] - blade_elev;
+            float df = calculate_FEE_column(blade, hard_depth, total_depth, CELL_SIZE);
+            total_force += df; total_yaw_moment += df * w;
         }
     }
     blade->last_force = total_force; blade->last_yaw_moment = total_yaw_moment;
-    
+
     if (total_vol_cut > 0) {
         float num_cols = blade->width / CELL_SIZE;
         float dh = (total_vol_cut / num_cols) / (CELL_SIZE * CELL_SIZE);
@@ -576,7 +601,7 @@ void simulate_step(SoilEnv* env, float dt) {
     }
 
     simulate_erosion(env);
-    
+
     // 4. Update Surcharge Q Dynamically
     float current_surcharge_vol = 0.0f;
     for (int j = 0; j < GRID_SIZE; j++) {
@@ -585,10 +610,9 @@ void simulate_step(SoilEnv* env, float dt) {
         if (fabsf(w) > blade->width / 2.0f) {
             continue;
         }
-        
+
         float curr_edge_x = blade->x - w * sinf(blade->yaw);
         int start_i = (int)(curr_edge_x / CELL_SIZE) + 1;
-        
         for (int i = start_i; i <= start_i + (int)(1.5f / CELL_SIZE); i++) {
             if (i >= 0 && i < GRID_SIZE) {
                 current_surcharge_vol += env->grid_L[i][j] * CELL_SIZE * CELL_SIZE;
@@ -596,7 +620,6 @@ void simulate_step(SoilEnv* env, float dt) {
         }
     }
     blade->surcharge_Q = current_surcharge_vol * LOOSE_SOIL_DENSITY * GRAVITY;
-    
     if (outfile && env->step_num % 5 == 0) {
         struct { int step; float p[16]; int gs; float cs; } h = { env->step_num, {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, GRID_SIZE, CELL_SIZE };
         fwrite(&h, sizeof(h), 1, outfile);
@@ -648,9 +671,11 @@ int main() {
     for (int t = 0; t < 1500; t++) {
         if (t < 100) {
             env->blade.effort_linear = 0.8f;
+            env->blade.effort_pitch = 0.5f;
         }
         if (t < 100) {
-            env->blade.effort_lift = -0.05f;
+            env->blade.effort_pitch = 0.0f;
+            env->blade.effort_lift = -0.06f;
         }
         if (t > 100) {
             env->blade.effort_lift = 0.0f;

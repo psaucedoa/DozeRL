@@ -128,7 +128,7 @@ void precompute_FEE(float rake_angle, float alpha);
 SoilEnv* env_init();
 void env_free(SoilEnv* env);
 void env_reset(SoilEnv* env, int seed);
-float calculate_FEE_column(Blade* blade, float depth, float width);
+float calculate_FEE_column(Blade* blade, float hard_depth, float total_depth, float width);
 float calculate_max_traction();
 void simulate_erosion(SoilEnv* env);
 void update_kinematics(SoilEnv* env);
