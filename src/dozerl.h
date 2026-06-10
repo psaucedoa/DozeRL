@@ -67,9 +67,12 @@ typedef struct {
     float score; // Recommended unnormalized single real number perf metric
     float episode_return; // Recommended metric: sum of agent rewards over episode
     float episode_length; // Recommended metric: number of steps of agent episode
+    float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
     float count_off_map;  // Custom metric: average off-map steps per episode
     float count_jitter;   // Custom metric: average high-jitter steps per episode
-    float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
+    float max_vel_arm;  // Custom metric: max arm angular velocity per episode
+    float max_vel_blade_pitch;  // Custom metric: max blade pitch angular velocity per episode
+    float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
     float n; // Required as the last field
 } Log;
 
@@ -454,40 +457,41 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     reward += jitter_term;
 
     // add huge min reward if the vehicle moves off the map
-    float off_map_penalty = 0.0f;
-    float max_coord = GRID_SIZE * CELL_SIZE;
-    if (env->blade.loader_x < 0.0f || env->blade.loader_x > max_coord ||
-        env->blade.loader_y < 0.0f || env->blade.loader_y > max_coord ||
-        env->blade.x < 0.0f || env->blade.x > max_coord ||
-        env->blade.y < 0.0f || env->blade.y > max_coord) {
-        off_map_penalty = -0.1f;
-        reward += off_map_penalty;
-    }
+    // float off_map_penalty = 0.0f;
+    // float max_coord = GRID_SIZE * CELL_SIZE;
+    // if (env->blade.loader_x < 0.0f || env->blade.loader_x > max_coord ||
+    //     env->blade.loader_y < 0.0f || env->blade.loader_y > max_coord ||
+    //     env->blade.x < 0.0f || env->blade.x > max_coord ||
+    //     env->blade.y < 0.0f || env->blade.y > max_coord) {
+    //     off_map_penalty = -0.1f;
+    //     reward += off_map_penalty;
+    // }
 
-    if (off_map_penalty < 0.0f) {
-        env->count_off_map += 1.0f;
-    }
+    // if (off_map_penalty < 0.0f) {
+    //     env->count_off_map += 1.0f;
+    // }
+
     if (jitter_term < -0.05f) {
         env->count_jitter += 1.0f;
     }
 
-    if (reward < -0.5f) {
-        env->count_large_neg_rewards += 1.0f;
-        printf("[DozeRL Warning] Large negative reward detected (%.4f) at step %d:\n"
-               "  - Terrain reward: %.4f (prev_err: %.2f, curr_err: %.2f, init_err: %.2f)\n"
-               "  - Push reward: %.4f\n"
-               "  - Arm penalty: %.4f (arm_height: %.2f)\n"
-               "  - Stationary penalty: %.4f (effort_linear: %.2f)\n"
-               "  - Jitter penalty: %.4f (vel_arm: %.2f, vel_pitch: %.2f, vel_roll: %.2f)\n"
-               "  - Off-map penalty: %.4f (loader: %.2f, %.2f, blade: %.2f, %.2f)\n",
-               reward, env->step_num,
-               terrain_reward, prev_error, current_error, env->initial_error,
-               push_reward > 0.0f ? push_reward : 0.0f,
-               arm_penalty, env->blade.arm_height,
-               stationary_penalty, env->blade.effort_linear,
-               jitter_term, env->blade.vel_arm_height, env->blade.vel_pitch_rel, env->blade.vel_roll_rel,
-               off_map_penalty, env->blade.loader_x, env->blade.loader_y, env->blade.x, env->blade.y);
-    }
+    // if (reward < -0.5f) {
+    //     env->count_large_neg_rewards += 1.0f;
+    //     printf("[DozeRL Warning] Large negative reward detected (%.4f) at step %d:\n"
+    //            "  - Terrain reward: %.4f (prev_err: %.2f, curr_err: %.2f, init_err: %.2f)\n"
+    //            "  - Push reward: %.4f\n"
+    //            "  - Arm penalty: %.4f (arm_height: %.2f)\n"
+    //            "  - Stationary penalty: %.4f (effort_linear: %.2f)\n"
+    //            "  - Jitter penalty: %.4f (vel_arm: %.2f, vel_pitch: %.2f, vel_roll: %.2f)\n"
+    //            "  - Off-map penalty: %.4f (loader: %.2f, %.2f, blade: %.2f, %.2f)\n",
+    //            reward, env->step_num,
+    //            terrain_reward, prev_error, current_error, env->initial_error,
+    //            push_reward > 0.0f ? push_reward : 0.0f,
+    //            arm_penalty, env->blade.arm_height,
+    //            stationary_penalty, env->blade.effort_linear,
+    //            jitter_term, env->blade.vel_arm_height, env->blade.vel_pitch_rel, env->blade.vel_roll_rel,
+    //            off_map_penalty, env->blade.loader_x, env->blade.loader_y, env->blade.x, env->blade.y);
+    // }
 
     return reward;
 }
@@ -657,17 +661,24 @@ static inline void update_kinematics(SoilEnv* env) {
     float x_blade_local = pivot_x + arm_r * cosf(theta);
     float z_blade_local = pivot_z + arm_r * sinf(theta);
 
+    // Apply chassis roll rotation
+    float cos_r = cosf(blade->roll);
+    float sin_r = sinf(blade->roll);
+    float x1 = x_blade_local;
+    float y1 = -z_blade_local * sin_r;
+    float z1 = z_blade_local * cos_r;
+
     // Apply chassis pitch rotation (pitch is positive when pitching up)
     float cos_p = cosf(blade->pitch);
     float sin_p = sinf(blade->pitch);
-    float rot_x = x_blade_local * cos_p - z_blade_local * sin_p;
-    float rot_z = x_blade_local * sin_p + z_blade_local * cos_p;
+    float x2 = x1 * cos_p - z1 * sin_p;
+    float y2 = y1;
+    float z2 = x1 * sin_p + z1 * cos_p;
 
-    // Apply chassis roll rotation? Left-right tilt is handled at the blade edges, 
-    // but the center of the blade is laterally centered (y_blade_local = 0).
-    blade->x = blade->loader_x + rot_x * cos_y;
-    blade->y = blade->loader_y + rot_x * sin_y;
-    blade->z = blade->loader_z + rot_z;
+    // Apply chassis yaw rotation
+    blade->x = blade->loader_x + x2 * cos_y - y2 * sin_y;
+    blade->y = blade->loader_y + x2 * sin_y + y2 * cos_y;
+    blade->z = blade->loader_z + z2;
 }
 
 static inline void simulate_step(SoilEnv* env, float dt) {
@@ -862,6 +873,9 @@ static inline void add_log(SoilEnv* env) {
     float perf = error_reduction / (env->initial_error + 1e-5f);
     if (perf < 0.0f) perf = 0.0f;
     if (perf > 1.0f) perf = 1.0f;
+    if (env->blade.vel_arm_height > env->log.max_vel_arm) env->log.max_vel_arm = env->blade.vel_arm_height;
+    if (env->blade.vel_pitch_rel > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = env->blade.vel_pitch_rel;
+    if (env->blade.vel_roll_rel > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = env->blade.vel_roll_rel;
 
     env->log.perf += perf;
     env->log.score += env->episode_return;
@@ -943,7 +957,7 @@ void c_step(SoilEnv* env) {
     float current_perf = error_reduction / (env->initial_error + 1e-5f);
 
     // Terminal condition (600 step limit, or 90% goal map built success)
-    if (env->tick >= 600 || current_perf >= 0.90f || env->episode_return < -1.1f) {
+    if (env->tick >= 600 || current_perf >= 0.90f) {
         env->terminals[0] = 1.0f;
         add_log(env);
         c_reset(env);

@@ -16,7 +16,10 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return);
     dict_set(out, "episode_length", log->episode_length);
+    dict_set(out, "count_large_neg_rewards", log->count_large_neg_rewards);
     dict_set(out, "count_off_map", log->count_off_map);
     dict_set(out, "count_jitter", log->count_jitter);
-    dict_set(out, "count_large_neg_rewards", log->count_large_neg_rewards);
+    dict_set(out, "max arm vel", log->max_vel_arm);
+    dict_set(out, "max blade pitch vel", log->max_vel_blade_pitch);
+    dict_set(out, "max blade roll vel", log->max_vel_blade_roll);
 }
