@@ -135,6 +135,8 @@ typedef struct {
     float grid_L[GRID_SIZE][GRID_SIZE];
     float grid_G[GRID_SIZE][GRID_SIZE]; // Goal Map
     float original_H[GRID_SIZE][GRID_SIZE]; // Original Terrain Map (to prevent moving soil penalty)
+    char map_region[GRID_SIZE][GRID_SIZE]; // 0=Neutral, 1=Cut, 2=Fill
+    float H_cfp_max;
     Blade blade;
     int step_num;
     int tick;
@@ -444,10 +446,53 @@ static inline float calculate_max_traction() {
     return track_area * env_c + machine_weight * tanf(env_phi);
 }
 
-static inline float env_get_reward(SoilEnv* env, float prev_error) {
-    float current_error = calculate_map_error(env);
-    float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
-    float terrain_reward = (prev_error - current_error) * 0.05;
+static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_SIZE]) {
+    float w_oc_raw = 1.0f;
+    float w_c_raw = 1.0f;
+    float w_f_raw = 1.0f;
+    float w_h_raw = 0.5f;
+
+    float sum_w = w_oc_raw + w_c_raw + w_f_raw + w_h_raw;
+    float w_oc = w_oc_raw / sum_w;
+    float w_c  = w_c_raw / sum_w;
+    float w_f  = w_f_raw / sum_w;
+    float w_h  = w_h_raw / sum_w;
+
+    float r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0;
+
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            float total_h = env->grid_H[i][j] + env->grid_L[i][j];
+            float target = env->grid_G[i][j];
+            float orig = env->original_H[i][j];
+            
+            float threshold = fmaxf(target, orig);
+            if (total_h > threshold) {
+                float excess = total_h - threshold;
+                if (excess > env->grid_L[i][j]) excess = env->grid_L[i][j];
+                total_h -= excess;
+            }
+            float H_plus_val = total_h;
+            float H_minus_val = H_minus[i][j];
+            float H_goal = env->grid_G[i][j];
+
+            float dH = H_plus_val - H_minus_val;
+            float H_cfm = H_minus_val - H_goal;
+            float H_cfp = H_plus_val - H_goal;
+
+            r1 += w_c * fmaxf(0.0f, fminf(-dH, H_cfm));
+            r2 += w_oc * fminf(0.0f, fmaxf(dH, H_cfp)); // Overcut
+            r3 += w_f * fmaxf(0.0f, fminf(dH, -H_cfm));
+            // r4 += w_oc * fminf(0.0f, fmaxf(-dH, -H_cfp)); // Overfill
+            
+            if (env->H_cfp_max > 1e-4f) {
+                // Normalize the continuous penalty by grid size so it doesn't wash out dH rewards
+                r5 -= (w_h * fabsf(H_cfp) / env->H_cfp_max) / (GRID_SIZE * GRID_SIZE);
+            }
+        }
+    }
+
+    float terrain_reward = r1 + r2 + r3 + r4 + r5;
     float reward = terrain_reward;
     
     // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
@@ -914,6 +959,24 @@ void c_reset(SoilEnv* env) {
     precompute_FEE(env, env->blade.rake_angle, 0.0f);
     update_kinematics(env);
 
+    env->H_cfp_max = 0.0001f;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            float diff = env->grid_G[i][j] - env->original_H[i][j];
+            if (diff > 1e-4f) {
+                env->map_region[i][j] = 2; // Fill
+            } else if (diff < -1e-4f) {
+                env->map_region[i][j] = 1; // Cut
+            } else {
+                env->map_region[i][j] = 0; // Neutral
+            }
+            float init_err = fabsf(env->grid_H[i][j] - env->grid_G[i][j]);
+            if (init_err > env->H_cfp_max) {
+                env->H_cfp_max = init_err;
+            }
+        }
+    }
+
     env->initial_error = calculate_map_error(env);
     env->episode_return = 0.0f;
     env->count_off_map = 0.0f;
@@ -931,7 +994,21 @@ void c_step(SoilEnv* env) {
     env->terminals[0] = 0.0f;
     env->rewards[0] = 0.0f;
 
-    float prev_error = calculate_map_error(env);
+    float H_minus[GRID_SIZE][GRID_SIZE];
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            float total_h = env->grid_H[i][j] + env->grid_L[i][j];
+            float target = env->grid_G[i][j];
+            float orig = env->original_H[i][j];
+            float threshold = fmaxf(target, orig);
+            if (total_h > threshold) {
+                float excess = total_h - threshold;
+                if (excess > env->grid_L[i][j]) excess = env->grid_L[i][j];
+                total_h -= excess;
+            }
+            H_minus[i][j] = total_h;
+        }
+    }
 
     // Map effort control inputs (-1.0 to 1.0)
     // actions: effort_linear, effort_rotational, effort_lift, effort_pitch, effort_roll, effort_yaw
@@ -947,7 +1024,7 @@ void c_step(SoilEnv* env) {
         simulate_step(env, 0.033333f);
     }
 
-    env->rewards[0] = env_get_reward(env, prev_error);
+    env->rewards[0] = env_get_reward(env, H_minus);
     env->episode_return += env->rewards[0];
 
     env_get_observation(env, (Observation*)env->observations);
