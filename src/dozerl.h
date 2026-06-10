@@ -418,10 +418,20 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     }
     float reward = (prev_error - current_error);
     
-    // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
-    float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.1f;
-    if (push_reward > 0.0f) {
-        reward += push_reward;
+    // // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
+    // float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.1f;
+    // if (push_reward > 0.0f) {
+    //     reward += push_reward;
+    // }
+
+    if (env->blade.surcharge_Q > 0.0f)
+    {
+        reward += 0.05;
+    }
+
+    if (env->blade.arm_height > 0.75f)
+    {
+        reward -= 0.05;
     }
 
     // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
@@ -429,12 +439,14 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
         reward -= 0.05f;
     }
 
-    float max_traction = calculate_max_traction();
-    float slip_ratio = env->blade.last_force / max_traction;
-    if (slip_ratio > 0.99f) reward -= (slip_ratio - 0.99f) * 10.0f;
-    reward -= (env->blade.effort_linear * env->blade.effort_linear + 
-               env->blade.effort_lift * env->blade.effort_lift +
-               env->blade.effort_pitch * env->blade.effort_pitch) * 0.01f;
+    // add huge min reward if the vehicle moves off the map
+
+    // float max_traction = calculate_max_traction();
+    // float slip_ratio = env->blade.last_force / max_traction;
+    // if (slip_ratio > 0.99f) reward -= (slip_ratio - 0.99f) * 10.0f;
+    // reward -= (env->blade.effort_linear * env->blade.effort_linear + 
+    //            env->blade.effort_lift * env->blade.effort_lift +
+    //            env->blade.effort_pitch * env->blade.effort_pitch) * 0.01f;
     return reward;
 }
 
@@ -865,7 +877,7 @@ void c_step(SoilEnv* env) {
     float current_perf = error_reduction / (env->initial_error + 1e-5f);
 
     // Terminal condition (600 step limit, or 90% goal map built success)
-    if (env->tick >= 600 || current_perf >= 0.90f) {
+    if (env->tick >= 600 || current_perf >= 0.90f || env->episode_return < -30.0f) {
         env->terminals[0] = 1.0f;
         add_log(env);
         c_reset(env);
