@@ -130,26 +130,53 @@ def main():
         loader_length, loader_width, loader_height = 2.5, 1.8, 2.5
         blade_height, blade_thickness, blade_width = 1.0, 0.2, 2.2
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
-        rr.log("world/machine", rr.Transform3D(translation=[loader_x, loader_y, loader_z + loader_height / 2.0], rotation=rr.Quaternion(xyzw=rot_chassis)))
-        rr.log("world/machine/chassis", rr.Boxes3D(half_sizes=[[loader_length/2.0, loader_width/2.0, loader_height/2.0]], colors=[[200, 200, 200]]))
+        
+        # Chassis origin is at track ground level, matching src/dozerl.h
+        rr.log("world/machine", rr.Transform3D(translation=[loader_x, loader_y, loader_z], rotation=rr.Quaternion(xyzw=rot_chassis)))
+        rr.log("world/machine/chassis", rr.Boxes3D(
+            half_sizes=[[loader_length/2.0, loader_width/2.0, loader_height/2.0]],
+            centers=[[0.0, 0.0, loader_height/2.0]],
+            colors=[[200, 200, 200]]
+        ))
         
         # Tracks Visualization
         track_length, track_width, track_height = 2.5, 0.4, 0.8
         track_gauge = 1.5
         rr.log("world/machine/tracks", rr.Boxes3D(
             half_sizes=[[track_length/2.0, track_width/2.0, track_height/2.0], [track_length/2.0, track_width/2.0, track_height/2.0]],
-            centers=[[0.0, track_gauge/2.0, -loader_height/2.0 + track_height/2.0], [0.0, -track_gauge/2.0, -loader_height/2.0 + track_height/2.0]],
+            centers=[[0.0, track_gauge/2.0, track_height/2.0], [0.0, -track_gauge/2.0, track_height/2.0]],
             colors=[[60, 60, 60], [60, 60, 60]]
         ))
+
+        # Pivot arm kinematics
+        arm_r = 3.35
+        pivot_x = -1.0
+        pivot_z = 1.5
 
         theta = arm_height
         blade_local_x = pivot_x + arm_r * np.cos(theta)
         z_blade_local = pivot_z + arm_r * np.sin(theta)
+
+        # Lift Arms (Left & Right)
+        arm_y_left = -0.85
+        arm_y_right = 0.85
+        rr.log("world/machine/lift_arms", rr.LineStrips3D(
+            [
+                [[pivot_x, arm_y_left, pivot_z], [blade_local_x, arm_y_left, z_blade_local]],
+                [[pivot_x, arm_y_right, pivot_z], [blade_local_x, arm_y_right, z_blade_local]]
+            ],
+            radii=[0.08, 0.08],
+            colors=[[150, 150, 150], [150, 150, 150]]
+        ))
         
-        blade_local_z = z_blade_local - loader_height/2.0 + blade_height/2.0
+        # Blade hinge is translated to the attachment point (cutting edge center)
         rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
-        rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, blade_local_z], rotation=rr.Quaternion(xyzw=rot_blade)))
-        rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(half_sizes=[[blade_thickness/2.0, blade_width/2.0, blade_height/2.0]], colors=[[255, 50, 50]]))
+        rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, z_blade_local], rotation=rr.Quaternion(xyzw=rot_blade)))
+        rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(
+            half_sizes=[[blade_thickness/2.0, blade_width/2.0, blade_height/2.0]],
+            centers=[[0.0, 0.0, blade_height/2.0]],
+            colors=[[255, 50, 50]]
+        ))
 
     f.close()
     print("Done.")

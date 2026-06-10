@@ -1,3 +1,3 @@
 #!/bin/bash
-source .venv/bin/activate
+source /home/rlab/rerun/bin/activate
 python3 viz.py
