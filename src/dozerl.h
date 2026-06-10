@@ -430,7 +430,7 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     }
 
     // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
-    if (fabsf(env->blade.v_linear) < 0.05f && fabsf(env->blade.v_rotational) < 0.05f) {
+    if (fabsf(env->blade.effort_linear) < 0.05f) {
         reward -= 0.05f;
     }
 
