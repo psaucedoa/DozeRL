@@ -434,6 +434,12 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
         reward -= 0.05f;
     }
 
+    // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
+    float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 0.01f +
+                           (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 1.0f +
+                           (env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 1.0f;
+    reward -= jitter_penalty * 0.1f;
+
     // add huge min reward if the vehicle moves off the map
     float max_coord = GRID_SIZE * CELL_SIZE;
     if (env->blade.loader_x < 0.0f || env->blade.loader_x > max_coord ||
