@@ -67,6 +67,9 @@ typedef struct {
     float score; // Recommended unnormalized single real number perf metric
     float episode_return; // Recommended metric: sum of agent rewards over episode
     float episode_length; // Recommended metric: number of steps of agent episode
+    float count_off_map;  // Custom metric: average off-map steps per episode
+    float count_jitter;   // Custom metric: average high-jitter steps per episode
+    float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
     float n; // Required as the last field
 } Log;
 
@@ -142,6 +145,9 @@ typedef struct {
     // Log metrics
     float initial_error;
     float episode_return;
+    float count_off_map;
+    float count_jitter;
+    float count_large_neg_rewards;
 } SoilEnv;
 
 typedef struct {
@@ -418,7 +424,8 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
         }
     }
     float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
-    float reward = (prev_error - current_error) / error_scale;
+    float terrain_reward = (prev_error - current_error) / error_scale;
+    float reward = terrain_reward;
     
     // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
     float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.01f;
@@ -426,37 +433,62 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
         reward += push_reward;
     }
 
-    if (env->blade.arm_height > 0.9f)
-    {
-        reward -= 0.01;
+    float arm_penalty = 0.0f;
+    if (env->blade.arm_height > 0.9f) {
+        arm_penalty = -0.01f;
+        reward += arm_penalty;
     }
 
+    float stationary_penalty = 0.0f;
     // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
     if (fabsf(env->blade.effort_linear) < 0.05f) {
-        reward -= 0.01f;
+        stationary_penalty = -0.01f;
+        reward += stationary_penalty;
     }
 
     // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
-    float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 0.01f +
+    float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 1.0f +
                            (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 1.0f +
                            (env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 1.0f;
-    reward -= jitter_penalty * 0.05f;
+    float jitter_term = -jitter_penalty * 0.05f;
+    reward += jitter_term;
 
     // add huge min reward if the vehicle moves off the map
+    float off_map_penalty = 0.0f;
     float max_coord = GRID_SIZE * CELL_SIZE;
     if (env->blade.loader_x < 0.0f || env->blade.loader_x > max_coord ||
         env->blade.loader_y < 0.0f || env->blade.loader_y > max_coord ||
         env->blade.x < 0.0f || env->blade.x > max_coord ||
         env->blade.y < 0.0f || env->blade.y > max_coord) {
-        reward -= 0.1f;
+        off_map_penalty = -0.1f;
+        reward += off_map_penalty;
     }
 
-    // float max_traction = calculate_max_traction();
-    // float slip_ratio = env->blade.last_force / max_traction;
-    // if (slip_ratio > 0.99f) reward -= (slip_ratio - 0.99f) * 10.0f;
-    // reward -= (env->blade.effort_linear * env->blade.effort_linear + 
-    //            env->blade.effort_lift * env->blade.effort_lift +
-    //            env->blade.effort_pitch * env->blade.effort_pitch) * 0.01f;
+    if (off_map_penalty < 0.0f) {
+        env->count_off_map += 1.0f;
+    }
+    if (jitter_term < -0.05f) {
+        env->count_jitter += 1.0f;
+    }
+
+    if (reward < -0.5f) {
+        env->count_large_neg_rewards += 1.0f;
+        printf("[DozeRL Warning] Large negative reward detected (%.4f) at step %d:\n"
+               "  - Terrain reward: %.4f (prev_err: %.2f, curr_err: %.2f, init_err: %.2f)\n"
+               "  - Push reward: %.4f\n"
+               "  - Arm penalty: %.4f (arm_height: %.2f)\n"
+               "  - Stationary penalty: %.4f (effort_linear: %.2f)\n"
+               "  - Jitter penalty: %.4f (vel_arm: %.2f, vel_pitch: %.2f, vel_roll: %.2f)\n"
+               "  - Off-map penalty: %.4f (loader: %.2f, %.2f, blade: %.2f, %.2f)\n",
+               reward, env->step_num,
+               terrain_reward, prev_error, current_error, env->initial_error,
+               push_reward > 0.0f ? push_reward : 0.0f,
+               arm_penalty, env->blade.arm_height,
+               stationary_penalty, env->blade.effort_linear,
+               jitter_term, env->blade.vel_arm_height, env->blade.vel_pitch_rel, env->blade.vel_roll_rel,
+               off_map_penalty, env->blade.loader_x, env->blade.loader_y, env->blade.x, env->blade.y);
+    }
+
     return reward;
 }
 
@@ -817,6 +849,9 @@ static inline void add_log(SoilEnv* env) {
     env->log.score += env->episode_return;
     env->log.episode_length += env->tick;
     env->log.episode_return += env->episode_return;
+    env->log.count_off_map += env->count_off_map;
+    env->log.count_jitter += env->count_jitter;
+    env->log.count_large_neg_rewards += env->count_large_neg_rewards;
     env->log.n++;
 }
 
@@ -836,6 +871,9 @@ void c_reset(SoilEnv* env) {
     }
     env->initial_error = current_error;
     env->episode_return = 0.0f;
+    env->count_off_map = 0.0f;
+    env->count_jitter = 0.0f;
+    env->count_large_neg_rewards = 0.0f;
 
     // Zero observations then write current obs
     memset(env->observations, 0, 5011 * sizeof(float));
