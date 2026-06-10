@@ -18,7 +18,7 @@ void env_get_observation(SoilEnv* env, Observation* obs) {
     // Proprioceptive observations
     obs->proprioceptive[0] = blade->pitch;
     obs->proprioceptive[1] = blade->roll;
-    obs->proprioceptive[2] = blade->v_rotational;
+    obs->proprioceptive[2] = blade->surcharge_Q / 10000.0f;
     obs->proprioceptive[3] = blade->arm_height;
     obs->proprioceptive[4] = blade->blade_pitch_rel;
     obs->proprioceptive[5] = blade->blade_roll_rel;
@@ -76,14 +76,20 @@ void env_free(SoilEnv* env) {
     if (env) free(env);
 }
 
+static int global_episode_count = 0;
+
 void env_reset(SoilEnv* env, int seed) {
     srand(seed); 
     
+    int episode = __atomic_fetch_add(&global_episode_count, 1, __ATOMIC_RELAXED);
+    float phase = (float)episode / 200000.0f;
+    if (phase > 1.0f) phase = 1.0f;
+
     // 1. Initial Multi-scale Noise
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            float fine = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
-            float coarse = ((float)rand() / RAND_MAX - 0.5f) * 0.3f;
+            float fine = (((float)rand() / RAND_MAX) - 0.5f) * 0.1f * phase;
+            float coarse = (((float)rand() / RAND_MAX) - 0.5f) * 0.3f * phase;
             env->grid_H[i][j] = 1.0f + fine + coarse;
             env->grid_L[i][j] = 0.0f;
         }
@@ -118,10 +124,6 @@ void env_reset(SoilEnv* env, int seed) {
     env->blade.width = 2.2f;
 
     // 3. Goal Map: Slot and Pile
-    float start_x = 5.0f + ((float)rand() / RAND_MAX) * 5.0f;
-    float start_y = 5.0f + ((float)rand() / RAND_MAX) * 15.0f;
-    float angle = ((float)rand() / RAND_MAX - 0.5f) * (PI / 4.0f);
-
     // Determine Pile Parameters First
     // Stout shape with a flat top and well-defined boundaries.
     float k = 0.4f; 
@@ -158,6 +160,23 @@ void env_reset(SoilEnv* env, int seed) {
         slot_L = 12.0f;
         slot_D = required_slot_vol / (slot_L * slot_W);
     }
+
+    // Now that we have slot_L and b_base, calculate placement so it fits in the env
+    float angle = (((float)rand() / RAND_MAX) - 0.5f) * (2.0f * PI * phase);
+    float start_offset = 3.0f + (((float)rand() / RAND_MAX) * 4.0f) * phase;
+
+    float dist_to_midpoint = (-start_offset + slot_L + 2.0f + b_base) / 2.0f;
+    float total_length = start_offset + slot_L + 2.0f + b_base;
+    
+    float map_center = (GRID_SIZE * CELL_SIZE) / 2.0f;
+    float slack = (GRID_SIZE * CELL_SIZE) - total_length;
+    float jitter = slack > 4.0f ? 4.0f : (slack > 0.0f ? slack : 0.0f);
+    
+    float mid_x = map_center + (((float)rand() / RAND_MAX) - 0.5f) * jitter * phase;
+    float mid_y = map_center + (((float)rand() / RAND_MAX) - 0.5f) * jitter * phase;
+    
+    float start_x = mid_x - dist_to_midpoint * cosf(angle);
+    float start_y = mid_y - dist_to_midpoint * sinf(angle);
 
     float cos_a = cosf(angle);
     float sin_a = sinf(angle);
@@ -203,10 +222,10 @@ void env_reset(SoilEnv* env, int seed) {
     }
 
     // Blade State
-    env->blade.loader_x = start_x - 4.0f * cos_a;
-    env->blade.loader_y = start_y - 4.0f * sin_a;
-    env->blade.x = start_x - 2.0f * cos_a;
-    env->blade.y = start_y - 2.0f * sin_a;
+    env->blade.loader_x = start_x - start_offset * cos_a;
+    env->blade.loader_y = start_y - start_offset * sin_a;
+    env->blade.x = start_x - (start_offset - 2.0f) * cos_a;
+    env->blade.y = start_y - (start_offset - 2.0f) * sin_a;
     env->blade.z = 0.8f;
     env->blade.rake_angle = 45.0f * (PI / 180.0f);
     env->blade.surcharge_Q = 0.0f;
