@@ -418,18 +418,13 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     }
     float reward = (prev_error - current_error);
     
-    // // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
-    // float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.1f;
-    // if (push_reward > 0.0f) {
-    //     reward += push_reward;
-    // }
-
-    if (env->blade.surcharge_Q > 0.0f)
-    {
-        reward += 0.05;
+    // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
+    float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.1f;
+    if (push_reward > 0.0f) {
+        reward += push_reward;
     }
 
-    if (env->blade.arm_height > 0.75f)
+    if (env->blade.arm_height > 0.9f)
     {
         reward -= 0.05;
     }
@@ -440,6 +435,13 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     }
 
     // add huge min reward if the vehicle moves off the map
+    float max_coord = GRID_SIZE * CELL_SIZE;
+    if (env->blade.loader_x < 0.0f || env->blade.loader_x > max_coord ||
+        env->blade.loader_y < 0.0f || env->blade.loader_y > max_coord ||
+        env->blade.x < 0.0f || env->blade.x > max_coord ||
+        env->blade.y < 0.0f || env->blade.y > max_coord) {
+        reward -= 100.0f;
+    }
 
     // float max_traction = calculate_max_traction();
     // float slip_ratio = env->blade.last_force / max_traction;
