@@ -1,0 +1,1 @@
+gcc -Wall -O2 -o out/sim src/dozerl.c -lm && ./out/sim

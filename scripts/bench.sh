@@ -1,0 +1,1 @@
+gcc -Wall -O2 -DBENCHMARK -o out/benchmark src/sim.c -lm && ./out/benchmark

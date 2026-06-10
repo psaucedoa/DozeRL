@@ -1,1 +1,1 @@
-# dsm_rl
+Use the scripts in /scripts to compile, run, bench, and view the output.
