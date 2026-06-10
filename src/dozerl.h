@@ -420,26 +420,26 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     float reward = (prev_error - current_error);
     
     // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
-    float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.1f;
+    float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.01f;
     if (push_reward > 0.0f) {
         reward += push_reward;
     }
 
     if (env->blade.arm_height > 0.9f)
     {
-        reward -= 0.05;
+        reward -= 0.01;
     }
 
     // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
     if (fabsf(env->blade.effort_linear) < 0.05f) {
-        reward -= 0.05f;
+        reward -= 0.01f;
     }
 
     // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
     float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 0.01f +
                            (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 1.0f +
                            (env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 1.0f;
-    reward -= jitter_penalty * 0.1f;
+    reward -= jitter_penalty * 0.05f;
 
     // add huge min reward if the vehicle moves off the map
     float max_coord = GRID_SIZE * CELL_SIZE;
@@ -447,7 +447,7 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
         env->blade.loader_y < 0.0f || env->blade.loader_y > max_coord ||
         env->blade.x < 0.0f || env->blade.x > max_coord ||
         env->blade.y < 0.0f || env->blade.y > max_coord) {
-        reward -= 100.0f;
+        reward -= 0.1f;
     }
 
     // float max_traction = calculate_max_traction();
@@ -886,7 +886,7 @@ void c_step(SoilEnv* env) {
     float current_perf = error_reduction / (env->initial_error + 1e-5f);
 
     // Terminal condition (600 step limit, or 90% goal map built success)
-    if (env->tick >= 600 || current_perf >= 0.90f || env->episode_return < -30.0f) {
+    if (env->tick >= 600 || current_perf >= 0.90f || env->episode_return < -1.1f) {
         env->terminals[0] = 1.0f;
         add_log(env);
         c_reset(env);
