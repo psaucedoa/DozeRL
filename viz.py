@@ -132,6 +132,16 @@ def main():
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         rr.log("world/machine", rr.Transform3D(translation=[loader_x, loader_y, loader_z + loader_height / 2.0], rotation=rr.Quaternion(xyzw=rot_chassis)))
         rr.log("world/machine/chassis", rr.Boxes3D(half_sizes=[[loader_length/2.0, loader_width/2.0, loader_height/2.0]], colors=[[200, 200, 200]]))
+        
+        # Tracks Visualization
+        track_length, track_width, track_height = 2.5, 0.4, 0.8
+        track_gauge = 1.5
+        rr.log("world/machine/tracks", rr.Boxes3D(
+            half_sizes=[[track_length/2.0, track_width/2.0, track_height/2.0], [track_length/2.0, track_width/2.0, track_height/2.0]],
+            centers=[[0.0, track_gauge/2.0, -loader_height/2.0 + track_height/2.0], [0.0, -track_gauge/2.0, -loader_height/2.0 + track_height/2.0]],
+            colors=[[60, 60, 60], [60, 60, 60]]
+        ))
+
         blade_local_x, blade_local_z = 2.0, arm_height - loader_height/2.0 + blade_height/2.0
         rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
         rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, blade_local_z], rotation=rr.Quaternion(xyzw=rot_blade)))
