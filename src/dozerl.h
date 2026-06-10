@@ -417,7 +417,8 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
             current_error += fabsf(diff);
         }
     }
-    float reward = (prev_error - current_error);
+    float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
+    float reward = (prev_error - current_error) / error_scale;
     
     // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
     float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.01f;
