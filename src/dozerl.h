@@ -134,6 +134,7 @@ typedef struct {
     float grid_H[GRID_SIZE][GRID_SIZE];
     float grid_L[GRID_SIZE][GRID_SIZE];
     float grid_G[GRID_SIZE][GRID_SIZE]; // Goal Map
+    float original_H[GRID_SIZE][GRID_SIZE]; // Original Terrain Map (to prevent moving soil penalty)
     Blade blade;
     int step_num;
     int tick;
@@ -267,6 +268,7 @@ static inline void env_reset(SoilEnv* env) {
             for (int j = 0; j < GRID_SIZE; j++) {
                 env->grid_H[i][j] = smoothed[i][j];
                 env->grid_G[i][j] = smoothed[i][j];
+                env->original_H[i][j] = smoothed[i][j];
             }
         }
     }
@@ -400,6 +402,30 @@ static inline void env_reset(SoilEnv* env) {
     env->step_num = 0;
 }
 
+static inline float calculate_map_error(SoilEnv* env) {
+    float error = 0;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            float total_h = env->grid_H[i][j] + env->grid_L[i][j];
+            float target = env->grid_G[i][j];
+            float orig = env->original_H[i][j];
+            
+            float threshold = fmaxf(target, orig);
+            if (total_h > threshold) {
+                float excess = total_h - threshold;
+                if (excess > env->grid_L[i][j]) {
+                    excess = env->grid_L[i][j];
+                }
+                total_h -= excess;
+            }
+            
+            float diff = total_h - target;
+            error += fabsf(diff);
+        }
+    }
+    return error;
+}
+
 static inline float calculate_FEE_column(SoilEnv* env, Blade* blade, float hard_depth, float total_depth, float width) {
     if (total_depth <= 0.0f) return 0.0f;
     float q = blade->surcharge_Q * (width / blade->width);
@@ -419,13 +445,7 @@ static inline float calculate_max_traction() {
 }
 
 static inline float env_get_reward(SoilEnv* env, float prev_error) {
-    float current_error = 0;
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            float diff = (env->grid_H[i][j] + env->grid_L[i][j]) - env->grid_G[i][j];
-            current_error += fabsf(diff);
-        }
-    }
+    float current_error = calculate_map_error(env);
     float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
     float terrain_reward = (prev_error - current_error) / error_scale;
     float reward = terrain_reward;
@@ -894,14 +914,7 @@ void c_reset(SoilEnv* env) {
     precompute_FEE(env, env->blade.rake_angle, 0.0f);
     update_kinematics(env);
 
-    float current_error = 0;
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            float diff = (env->grid_H[i][j] + env->grid_L[i][j]) - env->grid_G[i][j];
-            current_error += fabsf(diff);
-        }
-    }
-    env->initial_error = current_error;
+    env->initial_error = calculate_map_error(env);
     env->episode_return = 0.0f;
     env->count_off_map = 0.0f;
     env->count_jitter = 0.0f;
@@ -918,13 +931,7 @@ void c_step(SoilEnv* env) {
     env->terminals[0] = 0.0f;
     env->rewards[0] = 0.0f;
 
-    float prev_error = 0;
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            float diff = (env->grid_H[i][j] + env->grid_L[i][j]) - env->grid_G[i][j];
-            prev_error += fabsf(diff);
-        }
-    }
+    float prev_error = calculate_map_error(env);
 
     // Map effort control inputs (-1.0 to 1.0)
     // actions: effort_linear, effort_rotational, effort_lift, effort_pitch, effort_roll, effort_yaw
@@ -946,13 +953,7 @@ void c_step(SoilEnv* env) {
     env_get_observation(env, (Observation*)env->observations);
 
     // Calculate current terrain error reduction performance
-    float current_error = 0;
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            float diff = (env->grid_H[i][j] + env->grid_L[i][j]) - env->grid_G[i][j];
-            current_error += fabsf(diff);
-        }
-    }
+    float current_error = calculate_map_error(env);
     float error_reduction = env->initial_error - current_error;
     float current_perf = error_reduction / (env->initial_error + 1e-5f);
 
