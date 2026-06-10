@@ -447,7 +447,7 @@ static inline float calculate_max_traction() {
 static inline float env_get_reward(SoilEnv* env, float prev_error) {
     float current_error = calculate_map_error(env);
     float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
-    float terrain_reward = (prev_error - current_error) / error_scale;
+    float terrain_reward = (prev_error - current_error) * 0.05;
     float reward = terrain_reward;
     
     // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
@@ -473,7 +473,7 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 1.0f +
                            (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 1.0f +
                            (env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 1.0f;
-    float jitter_term = -jitter_penalty * 0.05f;
+    float jitter_term = -jitter_penalty * 0.02f;
     reward += jitter_term;
 
     // add huge min reward if the vehicle moves off the map
