@@ -142,7 +142,11 @@ def main():
             colors=[[60, 60, 60], [60, 60, 60]]
         ))
 
-        blade_local_x, blade_local_z = 2.0, arm_height - loader_height/2.0 + blade_height/2.0
+        theta = arm_height
+        blade_local_x = pivot_x + arm_r * np.cos(theta)
+        z_blade_local = pivot_z + arm_r * np.sin(theta)
+        
+        blade_local_z = z_blade_local - loader_height/2.0 + blade_height/2.0
         rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
         rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, blade_local_z], rotation=rr.Quaternion(xyzw=rot_blade)))
         rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(half_sizes=[[blade_thickness/2.0, blade_width/2.0, blade_height/2.0]], colors=[[255, 50, 50]]))

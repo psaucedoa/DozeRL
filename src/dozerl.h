@@ -18,12 +18,12 @@
 static int global_episode_count = 0;
 
 // Actuator Dynamics Constants
-#define MAX_FORCE_LIFT 120000.0f
+#define MAX_TORQUE_LIFT 100000.0f
 #define MAX_TORQUE_PITCH 15000.0f
 #define MAX_TORQUE_ROLL 15000.0f
 #define MAX_FORCE_LINEAR 100000.0f
 #define MAX_TORQUE_ROTATIONAL 80000.0f
-
+#define ARM_INERTIA 5000.0f
 #define ARM_MASS 800.0f
 #define PITCH_INERTIA 200.0f
 #define ROLL_INERTIA 200.0f
@@ -35,7 +35,7 @@ static int global_episode_count = 0;
 #define TRACK_WIDTH 0.4f
 #define TRACK_GAUGE 1.5f
 
-#define ARM_DAMPING 40000.0f  // Reduced to allow arm to lift faster under effort
+#define ARM_DAMPING 30000.0f  // Rotational damping on the loader arm
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch
 #define ROLL_DAMPING 50000.0f  // Increased to slow down roll
 #define LINEAR_DAMPING 30000.0f
@@ -43,12 +43,12 @@ static int global_episode_count = 0;
 
 #define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
 
-#define ARM_MIN -0.1f
-#define ARM_MAX 1.5f
-#define PITCH_MIN (-30.0f * (PI / 180.0f))
-#define PITCH_MAX (45.0f * (PI / 180.0f))
-#define ROLL_MIN (-20.0f * (PI / 180.0f))
-#define ROLL_MAX (20.0f * (PI / 180.0f))
+#define ARM_MIN -0.5f  // (rad)
+#define ARM_MAX 0.5f   // (rad)
+#define PITCH_MIN (-30.0f * (PI / 180.0f)) // (rad)
+#define PITCH_MAX (45.0f * (PI / 180.0f))  // (rad)
+#define ROLL_MIN (-20.0f * (PI / 180.0f))  // (rad)
+#define ROLL_MAX (20.0f * (PI / 180.0f))   // (rad)
 
 #define SPATIAL_OBS_SIZE 50
 
@@ -90,26 +90,26 @@ typedef struct {
     float yaw;
     
     // Actuators (Action Space)
-    float v_linear;        // Current linear velocity
-    float v_rotational;    // Current rotational velocity
-    float arm_height;      // Current arm height (m)
+    float v_linear;        // Current linear velocity (m/s) //velocity
+    float v_rotational;    // Current rotational velocity (rad/s) //velocity
+    float arm_height;      // Current arm angle (rad)
     float blade_pitch_rel; // Current relative pitch (rad)
     float blade_roll_rel;  // Current relative roll (rad)
     float blade_yaw_rel;   // Current relative yaw (rad)
     
     // Effort Inputs (-1.0 to 1.0)
-    float effort_lift;
-    float effort_pitch;
-    float effort_roll;
-    float effort_yaw;      // Fixed at 0 for now
-    float effort_linear;
-    float effort_rotational;
+    float effort_lift;       // //efort
+    float effort_pitch;      // //efort
+    float effort_roll;       // //efort
+    float effort_yaw;        // //efort
+    float effort_linear;     // //efort
+    float effort_rotational; // //efort
 
     // Internal Actuator State (Velocities)
-    float vel_arm_height;
-    float vel_pitch_rel;
-    float vel_roll_rel;
-    float vel_yaw_rel;
+    float vel_arm_height;    // Current arm angular velocity (rad/s) //velocity
+    float vel_pitch_rel;     // Current relative pitch velocity (rad/s) //velocity
+    float vel_roll_rel;      // Current relative roll velocity (rad/s) //velocity
+    float vel_yaw_rel;       // Current relative yaw velocity (rad/s) //velocity
     
     float loader_x;
     float loader_y;
@@ -176,17 +176,17 @@ static inline void env_get_observation(SoilEnv* env, Observation* obs) {
     Blade* blade = &env->blade;
     
     // Proprioceptive observations
-    obs->proprioceptive[0] = blade->pitch;
-    obs->proprioceptive[1] = blade->roll;
-    obs->proprioceptive[2] = blade->surcharge_Q / 10000.0f;
-    obs->proprioceptive[3] = blade->arm_height;
-    obs->proprioceptive[4] = blade->blade_pitch_rel;
-    obs->proprioceptive[5] = blade->blade_roll_rel;
-    obs->proprioceptive[6] = blade->vel_arm_height;
-    obs->proprioceptive[7] = blade->vel_pitch_rel;
-    obs->proprioceptive[8] = blade->vel_roll_rel;
-    obs->proprioceptive[9] = blade->v_linear;
-    obs->proprioceptive[10] = blade->v_rotational; 
+    obs->proprioceptive[0] = blade->pitch;               // chassis pitch (rad)
+    obs->proprioceptive[1] = blade->roll;                // chassis roll (rad)
+    obs->proprioceptive[2] = blade->surcharge_Q / 10000.0f; // surcharge
+    obs->proprioceptive[3] = blade->arm_height;          // arm angle (rad)
+    obs->proprioceptive[4] = blade->blade_pitch_rel;     // relative blade pitch (rad)
+    obs->proprioceptive[5] = blade->blade_roll_rel;      // relative blade roll (rad)
+    obs->proprioceptive[6] = blade->vel_arm_height;      // arm angular velocity (rad/s) //velocity
+    obs->proprioceptive[7] = blade->vel_pitch_rel;       // blade relative pitch velocity (rad/s) //velocity
+    obs->proprioceptive[8] = blade->vel_roll_rel;        // blade relative roll velocity (rad/s) //velocity
+    obs->proprioceptive[9] = blade->v_linear;            // linear velocity (m/s) //velocity
+    obs->proprioceptive[10] = blade->v_rotational;       // rotational velocity (rad/s) //velocity 
 
     // Spatial Observations (2-Channel Heightmap)
     float cos_y = cosf(blade->yaw);
@@ -377,7 +377,7 @@ static inline void env_reset(SoilEnv* env) {
     env->blade.yaw = angle;
     env->blade.v_linear = 0.0f;
     env->blade.v_rotational = 0.0f;
-    env->blade.arm_height = 0.25f;
+    env->blade.arm_height = 0.25f; // (rad)
     env->blade.blade_pitch_rel = 0.0f;
     env->blade.blade_roll_rel = 0.0f;
     env->blade.blade_yaw_rel = 0.0f;
@@ -434,7 +434,7 @@ static inline float env_get_reward(SoilEnv* env, float prev_error) {
     }
 
     float arm_penalty = 0.0f;
-    if (env->blade.arm_height > 0.9f) {
+    if (env->blade.arm_height > 0.35f) { // (rad)
         arm_penalty = -0.01f;
         reward += arm_penalty;
     }
@@ -573,10 +573,6 @@ static inline void simulate_erosion(SoilEnv* env) {
 
 static inline void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
-    float blade_offset_x = 2.0f; 
-    blade->x = blade->loader_x + blade_offset_x * cosf(blade->yaw);
-    blade->y = blade->loader_y + blade_offset_x * sinf(blade->yaw);
-    
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
     
     float tan_phi = tanf(env_phi);
@@ -650,7 +646,28 @@ static inline void update_kinematics(SoilEnv* env) {
     blade->loader_z = (sum_z_left + sum_z_right) / (2.0f * num_samples);
     blade->pitch = (atan2f(sum_xz_left/sum_x2, 1.0f) + atan2f(sum_xz_right/sum_x2, 1.0f)) / 2.0f;
     blade->roll = atan2f((sum_z_left - sum_z_right)/num_samples, TRACK_GAUGE);
-    blade->z = blade->loader_z + blade_offset_x * sinf(blade->pitch) + blade->arm_height;
+
+    // Pivot arm kinematics
+    float arm_r = 3.35f;
+    float pivot_x = -1.0f;
+    float pivot_z = 1.5f;
+
+    // Local coordinates of the blade relative to chassis origin (loader_z is at track ground level)
+    float theta = blade->arm_height; // arm_height represents the arm pivot angle (rad)
+    float x_blade_local = pivot_x + arm_r * cosf(theta);
+    float z_blade_local = pivot_z + arm_r * sinf(theta);
+
+    // Apply chassis pitch rotation (pitch is positive when pitching up)
+    float cos_p = cosf(blade->pitch);
+    float sin_p = sinf(blade->pitch);
+    float rot_x = x_blade_local * cos_p - z_blade_local * sin_p;
+    float rot_z = x_blade_local * sin_p + z_blade_local * cos_p;
+
+    // Apply chassis roll rotation? Left-right tilt is handled at the blade edges, 
+    // but the center of the blade is laterally centered (y_blade_local = 0).
+    blade->x = blade->loader_x + rot_x * cos_y;
+    blade->y = blade->loader_y + rot_x * sin_y;
+    blade->z = blade->loader_z + rot_z;
 }
 
 static inline void simulate_step(SoilEnv* env, float dt) {
@@ -678,12 +695,13 @@ static inline void simulate_step(SoilEnv* env, float dt) {
     
     blade->v_rotational = (blade->v_rotational + (net_yaw_torque / MACHINE_INERTIA) * dt) / (1.0f + (ROTATIONAL_DAMPING / MACHINE_INERTIA) * dt);
     
-    float external_lift_force = blade->last_force * 0.2f;
-    float external_total_lift = -ARM_MASS * GRAVITY - external_lift_force;
-    if (blade->effort_lift * external_total_lift <= 0) {
-        external_total_lift *= (1.0f - HYDRAULIC_STIFFNESS);
+    float gravity_torque = ARM_MASS * GRAVITY * 1.5f * cosf(blade->arm_height);
+    float external_resist_torque = blade->last_force * 1.5f; 
+    float external_total_torque = -gravity_torque - external_resist_torque;
+    if (blade->effort_lift * external_total_torque <= 0) {
+        external_total_torque *= (1.0f - HYDRAULIC_STIFFNESS);
     }
-    blade->vel_arm_height = (blade->vel_arm_height + ((blade->effort_lift * MAX_FORCE_LIFT + external_total_lift) / ARM_MASS) * dt) / (1.0f + (ARM_DAMPING / ARM_MASS) * dt);
+    blade->vel_arm_height = (blade->vel_arm_height + ((blade->effort_lift * MAX_TORQUE_LIFT + external_total_torque) / ARM_INERTIA) * dt) / (1.0f + (ARM_DAMPING / ARM_INERTIA) * dt);
     blade->arm_height += blade->vel_arm_height * dt;
     if (blade->arm_height < ARM_MIN) blade->arm_height = ARM_MIN;
     if (blade->arm_height > ARM_MAX) blade->arm_height = ARM_MAX;
@@ -896,12 +914,12 @@ void c_step(SoilEnv* env) {
 
     // Map effort control inputs (-1.0 to 1.0)
     // actions: effort_linear, effort_rotational, effort_lift, effort_pitch, effort_roll, effort_yaw
-    env->blade.effort_linear     = clamp_action(env->actions[0]);
-    env->blade.effort_rotational = clamp_action(env->actions[1]);
-    env->blade.effort_lift       = clamp_action(env->actions[2]);
-    env->blade.effort_pitch      = clamp_action(env->actions[3]);
-    env->blade.effort_roll       = clamp_action(env->actions[4]);
-    env->blade.effort_yaw        = clamp_action(env->actions[5]);
+    env->blade.effort_linear     = clamp_action(env->actions[0]); // //efort
+    env->blade.effort_rotational = clamp_action(env->actions[1]); // //efort
+    env->blade.effort_lift       = clamp_action(env->actions[2]); // //efort
+    env->blade.effort_pitch      = clamp_action(env->actions[3]); // //efort
+    env->blade.effort_roll       = clamp_action(env->actions[4]); // //efort
+    env->blade.effort_yaw        = clamp_action(env->actions[5]); // //efort
 
     // Sub-stepping: simulate 3 steps of 0.033333s for stability and control dynamics (10Hz control loop with 30Hz physics)
     for (int sub = 0; sub < 3; sub++) {
