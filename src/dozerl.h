@@ -301,7 +301,7 @@ static inline void env_reset(SoilEnv* env) {
     float angle = (rand_f(&env->rng) - 0.5f) * (2.0f * PI * phase);
     
     // Curriculum: starting distance from slot grows from tight (3.0m) to far (up to 7.0m)
-    float start_offset = 3.0f + (rand_f(&env->rng) * 4.0f) * phase;
+    float start_offset = 1.0f + (rand_f(&env->rng) * 2.0f) * phase;
     
     float dist_to_midpoint = (-start_offset + slot_L + 2.0f + b_base) / 2.0f;
     float total_length = start_offset + slot_L + 2.0f + b_base;
