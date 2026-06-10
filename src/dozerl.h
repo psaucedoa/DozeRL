@@ -186,16 +186,17 @@ static inline void env_get_observation(SoilEnv* env, Observation* obs) {
     float cos_y = cosf(blade->yaw);
     float sin_y = sinf(blade->yaw);
 
+    float half_obs = SPATIAL_OBS_SIZE / 2.0f;
+    float start_grid_x = (blade->x / CELL_SIZE) - half_obs * cos_y + half_obs * sin_y;
+    float start_grid_y = (blade->y / CELL_SIZE) - half_obs * sin_y - half_obs * cos_y;
+
     for (int i = 0; i < SPATIAL_OBS_SIZE; i++) {
+        float row_grid_x = start_grid_x + i * cos_y;
+        float row_grid_y = start_grid_y + i * sin_y;
+        
         for (int j = 0; j < SPATIAL_OBS_SIZE; j++) {
-            float local_x = i * CELL_SIZE; 
-            float local_y = (j - SPATIAL_OBS_SIZE / 2.0f) * CELL_SIZE;
-
-            float global_x = blade->x + local_x * cos_y - local_y * sin_y;
-            float global_y = blade->y + local_x * sin_y + local_y * cos_y;
-
-            int grid_i = (int)(global_x / CELL_SIZE);
-            int grid_j = (int)(global_y / CELL_SIZE);
+            int grid_i = (int)(row_grid_x - j * sin_y);
+            int grid_j = (int)(row_grid_y + j * cos_y);
 
             if (grid_i >= 0 && grid_i < GRID_SIZE && grid_j >= 0 && grid_j < GRID_SIZE) {
                 obs->spatial[0][i][j] = (env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - blade->loader_z;
