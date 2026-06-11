@@ -496,30 +496,30 @@ static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_S
     float reward = terrain_reward;
     
     // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
-    float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.01f;
-    if (push_reward > 0.0f) {
-        reward += push_reward;
-    }
+    // float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.01f;
+    // if (push_reward > 0.0f) {
+    //     reward += push_reward;
+    // }
 
-    float arm_penalty = 0.0f;
-    if (env->blade.arm_height > 0.35f) { // (rad)
-        arm_penalty = -0.01f;
-        reward += arm_penalty;
-    }
+    // float arm_penalty = 0.0f;
+    // if (env->blade.arm_height > 0.35f) { // (rad)
+    //     arm_penalty = -0.01f;
+    //     reward += arm_penalty;
+    // }
 
-    float stationary_penalty = 0.0f;
-    // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
-    if (fabsf(env->blade.effort_linear) < 0.05f) {
-        stationary_penalty = -0.01f;
-        reward += stationary_penalty;
-    }
+    // float stationary_penalty = 0.0f;
+    // // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
+    // if (fabsf(env->blade.effort_linear) < 0.05f) {
+    //     stationary_penalty = -0.01f;
+    //     reward += stationary_penalty;
+    // }
 
     // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
     float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 1.0f +
                            (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 1.0f +
                            (env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 1.0f;
     float jitter_term = -jitter_penalty * 0.02f;
-    reward += jitter_term;
+    // reward += jitter_term;
 
     // add huge min reward if the vehicle moves off the map
     // float off_map_penalty = 0.0f;
