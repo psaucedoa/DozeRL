@@ -233,8 +233,8 @@ static inline void precompute_FEE(SoilEnv* env, float rake_angle, float alpha) {
 }
 
 static inline void env_reset(SoilEnv* env) {
-    int episode = __atomic_fetch_add(&global_episode_count, 1, __ATOMIC_RELAXED);
-    float phase = (float)episode / 50000000.0f;
+    // int episode = __atomic_fetch_add(&global_episode_count, 1, __ATOMIC_RELAXED);
+    float phase = 1.0f; //(float)episode / 50000000.0f;
     if (phase > 1.0f) phase = 1.0f;
 
     // 1. Initial Multi-scale Noise
@@ -446,7 +446,7 @@ static inline float calculate_max_traction() {
 
 static inline float env_get_reward(SoilEnv* env, float prev_error) {
     float current_error = calculate_map_error(env);
-    float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
+    // float error_scale = (env->initial_error > 1e-5f) ? env->initial_error : 1.0f;
     float terrain_reward = (prev_error - current_error) * 0.05;
     float reward = terrain_reward;
     
@@ -598,17 +598,17 @@ static inline void simulate_erosion(SoilEnv* env) {
 static inline void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
-    
+
     float tan_phi = tanf(env_phi);
     if (tan_phi < 0.01f) tan_phi = 0.01f;
-    
+
     float N_q_b = expf(PI * tan_phi) * powf(tanf((PI / 4.0f) + (env_phi / 2.0f)), 2.0f);
     float N_c_b = (N_q_b - 1.0f) / tan_phi;
     float N_gamma_b = 2.0f * (N_q_b + 1.0f) * tan_phi;
-    
+
     float q_u = env_c * N_c_b + 0.5f * env_gamma * TRACK_WIDTH * N_gamma_b;
     float ground_pressure = (MACHINE_MASS * GRAVITY) / (2.0f * TRACK_LENGTH * TRACK_WIDTH);
-    
+
     float compaction_rate = (ground_pressure / q_u) * 0.5f; 
     if (compaction_rate > 0.8f) compaction_rate = 0.8f;
     if (compaction_rate < 0.05f) compaction_rate = 0.05f;
@@ -624,17 +624,17 @@ static inline void update_kinematics(SoilEnv* env) {
     for (int i = min_i; i <= max_i; i++) {
         for (int j = min_j; j <= max_j; j++) {
             if (env->grid_L[i][j] < 0.001f) continue;
-            
+
             float dx = (i * CELL_SIZE) - blade->loader_x;
             float dy = (j * CELL_SIZE) - blade->loader_y;
-            
+
             float lx = dx * cos_y + dy * sin_y;
             float ly = -dx * sin_y + dy * cos_y;
-            
+
             if (fabsf(lx) <= TRACK_LENGTH / 2.0f) {
                 if (fabsf(ly - TRACK_GAUGE / 2.0f) <= TRACK_WIDTH / 2.0f || 
                     fabsf(ly + TRACK_GAUGE / 2.0f) <= TRACK_WIDTH / 2.0f) {
-                    
+
                     float compacted = env->grid_L[i][j] * compaction_rate;
                     env->grid_L[i][j] -= compacted;
                     env->grid_H[i][j] += compacted / SWELL_RATIO;
@@ -652,10 +652,10 @@ static inline void update_kinematics(SoilEnv* env) {
         sum_x2 += lx * lx;
         float p_lx = blade->loader_x + lx * cos_y - hW * sin_y, p_ly = blade->loader_y + lx * sin_y + hW * cos_y;
         float p_rx = blade->loader_x + lx * cos_y + hW * sin_y, p_ry = blade->loader_y + lx * sin_y - hW * cos_y;
-        
+
         int ixl = (int)(p_lx/CELL_SIZE), iyl = (int)(p_ly/CELL_SIZE);
         int ixr = (int)(p_rx/CELL_SIZE), iyr = (int)(p_ry/CELL_SIZE);
-        
+
         float zl = 1.0f, zr = 1.0f;
         if (ixl >= 0 && ixl < GRID_SIZE && iyl >= 0 && iyl < GRID_SIZE) {
             zl = env->grid_H[ixl][iyl] + env->grid_L[ixl][iyl];
@@ -663,7 +663,7 @@ static inline void update_kinematics(SoilEnv* env) {
         if (ixr >= 0 && ixr < GRID_SIZE && iyr >= 0 && iyr < GRID_SIZE) {
             zr = env->grid_H[ixr][iyr] + env->grid_L[ixr][iyr];
         }
-        
+
         sum_z_left += zl; sum_z_right += zr;
         sum_xz_left += lx * zl; sum_xz_right += lx * zr;
     }
@@ -756,7 +756,7 @@ static inline void simulate_step(SoilEnv* env, float dt) {
     if (blade->blade_roll_rel < ROLL_MIN) blade->blade_roll_rel = ROLL_MIN;
     if (blade->blade_roll_rel > ROLL_MAX) blade->blade_roll_rel = ROLL_MAX;
 
-    blade->rake_angle = (45.0f * (PI/180.0f)) + blade->blade_pitch_rel + blade->pitch;
+    blade->rake_angle = (45.0f * (PI/180.0f)) + blade->blade_pitch_rel + blade->pitch + blade->arm_height;
     precompute_FEE(env, blade->rake_angle, 0.0f);
 
     float slip = blade->last_force / calculate_max_traction(); 
@@ -852,7 +852,13 @@ static inline void simulate_step(SoilEnv* env, float dt) {
     }
     blade->surcharge_Q = current_surcharge_vol * LOOSE_SOIL_DENSITY * GRAVITY;
     if (outfile && env->step_num % 1 == 0) {
-        struct { int step; float p[16]; int gs; float cs; } h = { env->step_num, {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, GRID_SIZE, CELL_SIZE };
+        struct { int step; float p[16]; float e[6]; int gs; float cs; } h = { 
+            env->step_num, 
+            {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, 
+            {blade->effort_linear, blade->effort_rotational, blade->effort_lift, blade->effort_pitch, blade->effort_roll, blade->effort_yaw},
+            GRID_SIZE, 
+            CELL_SIZE 
+        };
         fwrite(&h, sizeof(h), 1, outfile);
         float flat[GRID_SIZE * GRID_SIZE];
         for (int i = 0; i < GRID_SIZE; i++) {

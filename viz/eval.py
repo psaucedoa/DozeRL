@@ -2,52 +2,43 @@ import rerun as rr
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import struct
+import sys
+import os
 
 def get_terrain_color(t):
-    """
-    Perceptually rich colormap (Turbo-like) to make slight elevation 
-    differences stand out across the full spectrum.
-    """
     stops = np.array([
-        [0.1, 0.1, 0.3],  # Dark Blue
-        [0.0, 0.5, 0.8],  # Cyan
-        [0.1, 0.6, 0.1],  # Green
-        [0.8, 0.7, 0.2],  # Yellow-Brown
-        [0.5, 0.2, 0.1]   # Earth Red
+        [0.1, 0.1, 0.3],  
+        [0.0, 0.5, 0.8],  
+        [0.1, 0.6, 0.1],  
+        [0.8, 0.7, 0.2],  
+        [0.5, 0.2, 0.1]   
     ])
-    
     n_stops = len(stops)
     t = np.clip(t, 0.0, 1.0)
-    
     idx = t * (n_stops - 1)
     low_idx = np.floor(idx).astype(int)
     high_idx = np.ceil(idx).astype(int)
     frac = idx - low_idx
-    
     colors = (1 - frac[..., None]) * stops[low_idx] + frac[..., None] * stops[high_idx]
     return colors
 
 def calculate_normals(grid_data, cell_size):
-    """
-    Calculates vertex normals for smooth shading on a regular grid.
-    """
     dzdx, dzdy = np.gradient(grid_data, cell_size)
-    # Normal vector n = (-dz/dx, -dz/dy, 1)
     normals = np.stack([-dzdx, -dzdy, np.ones_like(grid_data)], axis=-1)
-    # Normalize
     norm = np.linalg.norm(normals, axis=-1, keepdims=True)
     return (normals / norm).reshape(-1, 3)
 
 def main():
-    rr.init("SoilSim", spawn=True)
+    rr.init("SoilSim_Eval", spawn=True)
     
-    header_format = "i16fif"
+    header_format = "i22fif"
     header_size = struct.calcsize(header_format)
     
     try:
-        f = open("out/sim_out.bin", "rb")
+        bin_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "sim_out.bin")
+        f = open(bin_path, "rb")
     except FileNotFoundError:
-        print("Error: sim_out.bin not found. Did you run 'make sim && ./sim'?")
+        print(f"Error: {bin_path} not found.")
         return
 
     print("Loading binary simulation data into Rerun...")
@@ -65,24 +56,45 @@ def main():
          blade_roll_rel, vel_roll,
          blade_yaw_rel, vel_yaw,
          track_v_lin, track_v_rot) = header[1:17]
-        grid_size = header[17]
-        cell_size = header[18]
+         
+        (eff_linear, eff_rotational, eff_lift, 
+         eff_pitch, eff_roll, eff_yaw) = header[17:23]
+         
+        grid_size = header[23]
+        cell_size = header[24]
         
-        # 1. Read Terrain Grid
         grid_bytes = f.read(grid_size * grid_size * 4)
         if not grid_bytes: break
         grid_data = np.frombuffer(grid_bytes, dtype=np.float32).reshape(grid_size, grid_size)
 
-        # 2. Read Goal Grid
         goal_bytes = f.read(grid_size * grid_size * 4)
         if not goal_bytes: break
         goal_data = np.frombuffer(goal_bytes, dtype=np.float32).reshape(grid_size, grid_size)
         
         rr.set_time("step_index", sequence=step)
         
+        # Log telemetry
+        rr.log("kinematics/effort/linear", rr.Scalars(eff_linear))
+        rr.log("kinematics/effort/rotational", rr.Scalars(eff_rotational))
+        rr.log("kinematics/effort/lift", rr.Scalars(eff_lift))
+        rr.log("kinematics/effort/pitch", rr.Scalars(eff_pitch))
+        rr.log("kinematics/effort/roll", rr.Scalars(eff_roll))
+        rr.log("kinematics/effort/yaw", rr.Scalars(eff_yaw))
+
+        rr.log("kinematics/velocity/linear", rr.Scalars(track_v_lin))
+        rr.log("kinematics/velocity/rotational", rr.Scalars(track_v_rot))
+        rr.log("kinematics/velocity/lift", rr.Scalars(vel_arm))
+        rr.log("kinematics/velocity/pitch", rr.Scalars(vel_pitch))
+        rr.log("kinematics/velocity/roll", rr.Scalars(vel_roll))
+        rr.log("kinematics/velocity/yaw", rr.Scalars(vel_yaw))
+
+        rr.log("kinematics/position/lift", rr.Scalars(arm_height))
+        rr.log("kinematics/position/pitch", rr.Scalars(blade_pitch_rel))
+        rr.log("kinematics/position/roll", rr.Scalars(blade_roll_rel))
+        rr.log("kinematics/position/yaw", rr.Scalars(blade_yaw_rel))
+        
         # Terrain Mesh
         normals = calculate_normals(grid_data, cell_size)
-        
         light_dir = np.array([-1.0, -1.0, 1.5]); light_dir /= np.linalg.norm(light_dir)
         shade = np.clip(np.sum(normals * light_dir, axis=-1), 0.0, 1.0)
         shade = 0.4 + 0.6 * shade
@@ -109,7 +121,7 @@ def main():
             triangle_indices=triangles
         ))
         
-        # Goal Mesh (Blueprint Style)
+        # Goal Mesh
         goal_normals = calculate_normals(goal_data, cell_size)
         shade_g = np.clip(np.sum(goal_normals * light_dir, axis=-1), 0.0, 1.0)
         shade_g = 0.5 + 0.5 * shade_g
@@ -131,7 +143,6 @@ def main():
         blade_height, blade_thickness, blade_width = 1.0, 0.2, 2.2
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         
-        # Chassis origin is at track ground level, matching src/dozerl.h
         rr.log("world/machine", rr.Transform3D(translation=[loader_x, loader_y, loader_z], rotation=rr.Quaternion(xyzw=rot_chassis)))
         rr.log("world/machine/chassis", rr.Boxes3D(
             half_sizes=[[loader_length/2.0, loader_width/2.0, loader_height/2.0]],
@@ -139,7 +150,6 @@ def main():
             colors=[[200, 200, 200]]
         ))
         
-        # Tracks Visualization
         track_length, track_width, track_height = 2.5, 0.4, 0.8
         track_gauge = 1.5
         rr.log("world/machine/tracks", rr.Boxes3D(
@@ -148,7 +158,6 @@ def main():
             colors=[[60, 60, 60], [60, 60, 60]]
         ))
 
-        # Pivot arm kinematics
         arm_r = 3.35
         pivot_x = -1.0
         pivot_z = 1.5
@@ -157,7 +166,6 @@ def main():
         blade_local_x = pivot_x + arm_r * np.cos(theta)
         z_blade_local = pivot_z + arm_r * np.sin(theta)
 
-        # Lift Arms (Left & Right)
         arm_y_left = -0.85
         arm_y_right = 0.85
         rr.log("world/machine/lift_arms", rr.LineStrips3D(
@@ -169,8 +177,8 @@ def main():
             colors=[[150, 150, 150], [150, 150, 150]]
         ))
         
-        # Blade hinge is translated to the attachment point (cutting edge center)
-        rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -blade_pitch_rel, blade_roll_rel], degrees=False).as_quat()
+        base_rake = np.radians(45.0)
+        rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -(base_rake + blade_pitch_rel + arm_height), blade_roll_rel], degrees=False).as_quat()
         rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, z_blade_local], rotation=rr.Quaternion(xyzw=rot_blade)))
         rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(
             half_sizes=[[blade_thickness/2.0, blade_width/2.0, blade_height/2.0]],
