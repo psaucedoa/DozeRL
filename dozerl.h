@@ -73,6 +73,14 @@ typedef struct {
     float max_vel_arm;  // Custom metric: max arm angular velocity per episode
     float max_vel_blade_pitch;  // Custom metric: max blade pitch angular velocity per episode
     float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
+
+    // reward signals per ep
+    float r1_norm;
+    float r2_norm;
+    float r3_norm;
+    float r4_norm;
+    float r5_norm;
+
     float n; // Required as the last field
 } Log;
 
@@ -136,7 +144,8 @@ typedef struct {
     float grid_G[GRID_SIZE][GRID_SIZE]; // Goal Map
     float original_H[GRID_SIZE][GRID_SIZE]; // Original Terrain Map (to prevent moving soil penalty)
     char map_region[GRID_SIZE][GRID_SIZE]; // 0=Neutral, 1=Cut, 2=Fill
-    float H_cfp_max;
+    float H_cfp_max;  // max expected pile size / error, basically
+    float dH_max;  // expected maximum displacement per cell
     Blade blade;
     int step_num;
     int tick;
@@ -154,6 +163,11 @@ typedef struct {
     float count_off_map;
     float count_jitter;
     float count_large_neg_rewards;
+    float r1;
+    float r2;
+    float r3;
+    float r4;
+    float r5;
 } SoilEnv;
 
 typedef struct {
@@ -448,7 +462,7 @@ static inline float calculate_max_traction() {
 
 static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_SIZE]) {
     float w_oc_raw = 1.0f;  // overcut weight
-    float w_c_raw = 1.0f;  // cut weight
+    float w_c_raw = 4.0f;  // cut weight
     float w_f_raw = 1.0f;  // fill weight
     float w_h_raw = 1.0f;  // height goal state weight
 
@@ -489,44 +503,43 @@ static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_S
                 r3 += w_f * fmaxf(0.0f, fminf(dH, -H_cfm));
             } else if (H_cfm < 0 && dH < 0) {
                 // Fill region, cut in progress
-                r4 += w_oc * dH; // Penalty for cutting in a fill region
+                r4 += (w_oc * dH); // Penalty for cutting in a fill region
             }
 
             if (env->H_cfp_max > 1e-4f) {
-                // Normalize the continuous penalty by grid size so it doesn't wash out dH rewards
-                r5 -= (w_h * fabsf(H_cfp) / env->H_cfp_max) / (GRID_SIZE * GRID_SIZE);
+                r5 -= w_h * fabsf(H_cfp);
             }
         }
     }
 
+    r1 = r1 / env->dH_max / (GRID_SIZE * GRID_SIZE);
+    r2 = r2 / env->dH_max / (GRID_SIZE * GRID_SIZE);
+    r3 = r3 / env->dH_max / (GRID_SIZE * GRID_SIZE);
+    r4 = r4 / env->dH_max / (GRID_SIZE * GRID_SIZE);
+    r5 = r5 / env->H_cfp_max / (GRID_SIZE * GRID_SIZE);
+
+    env->r1 += r1;
+    env->r2 += r2;
+    env->r3 += r3;
+    env->r4 += r4;
+    env->r5 += r5;
+
     float terrain_reward = r1 + r2 + r3 + r4 + r5;
     float reward = terrain_reward;
-    
-    // 1. Pushing Reward: Reward moving forward while carrying soil surcharge
-    // float push_reward = (env->blade.surcharge_Q / 10000.0f) * env->blade.v_linear * 0.01f;
-    // if (push_reward > 0.0f) {
-    //     reward += push_reward;
+
+    // float stationary_penalty = 0.0f;
+    // // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
+    // if (fabsf(env->blade.effort_linear) < 0.1f) {
+    //     stationary_penalty = 0.05f;
+    //     reward -= stationary_penalty;
     // }
 
-    // float arm_penalty = 0.0f;
-    // if (env->blade.arm_height > 0.35f) { // (rad)
-    //     arm_penalty = -0.01f;
-    //     reward += arm_penalty;
-    // }
-
-    float stationary_penalty = 0.0f;
-    // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
-    if (fabsf(env->blade.effort_linear) < 0.1f) {
-        stationary_penalty = 0.05f;
-        reward -= stationary_penalty;
-    }
-
-    // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
-    float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height * env->blade.vel_arm_height) * 0.25f +
-                           (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 0.25f +
-                           (env->blade.vel_roll_rel * env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 0.25f;
-    float jitter_term = -jitter_penalty * 0.01f;
-    reward += jitter_term;
+    // // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
+    // float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height * env->blade.vel_arm_height) * 0.25f +
+    //                        (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 0.25f +
+    //                        (env->blade.vel_roll_rel * env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 0.25f;
+    // float jitter_term = -jitter_penalty * 0.01f;
+    // reward += jitter_term;
 
     if (jitter_term < -0.05f) {
         env->count_jitter += 1.0f;
@@ -941,7 +954,6 @@ void c_reset(SoilEnv* env) {
     precompute_FEE(env, env->blade.rake_angle, 0.0f);
     update_kinematics(env);
 
-    env->H_cfp_max = 0.0001f;
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             float diff = env->grid_G[i][j] - env->original_H[i][j];
@@ -951,10 +963,6 @@ void c_reset(SoilEnv* env) {
                 env->map_region[i][j] = 1; // Cut
             } else {
                 env->map_region[i][j] = 0; // Neutral
-            }
-            float init_err = fabsf(env->grid_H[i][j] - env->grid_G[i][j]);
-            if (init_err > env->H_cfp_max) {
-                env->H_cfp_max = init_err;
             }
         }
     }
@@ -1018,6 +1026,12 @@ void c_step(SoilEnv* env) {
 
     // Terminal condition (600 step limit, or 90% goal map built success)
     if (env->tick >= 600 || current_perf >= 0.90f) {
+        env->log.r1_norm = env->r1 / env->tick;
+        env->log.r2_norm = env->r2 / env->tick;
+        env->log.r3_norm = env->r3 / env->tick;
+        env->log.r4_norm = env->r4 / env->tick;
+        env->log.r5_norm = env->r5 / env->tick;
+
         env->terminals[0] = 1.0f;
         add_log(env);
         c_reset(env);
