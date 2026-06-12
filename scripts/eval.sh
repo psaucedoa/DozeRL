@@ -33,3 +33,6 @@ cd "$WORKSPACE_DIR"
 
 echo "Running simulation rollout using policy: $CHECKPOINT_PATH"
 "$SIM_EXEC" "$CHECKPOINT_PATH"
+
+echo "Launching evaluation visualizer in Rerun..."
+python viz/viz.py --mode eval

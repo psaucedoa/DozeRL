@@ -1,3 +1,4 @@
 .venv/*
 out/*
 checkpoints/*
+test_kinematics

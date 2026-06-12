@@ -23,17 +23,17 @@ static int global_episode_count = 0;
 #define MAX_TORQUE_ROLL 15000.0f
 #define MAX_FORCE_LINEAR 100000.0f
 #define MAX_TORQUE_ROTATIONAL 80000.0f
-#define ARM_INERTIA 5000.0f
-#define ARM_MASS 800.0f
-#define PITCH_INERTIA 200.0f
-#define ROLL_INERTIA 200.0f
-#define MACHINE_MASS 18000.0f
-#define MACHINE_INERTIA 25000.0f
+#define ARM_INERTIA 7000.0f
+#define ARM_MASS 490.0f
+#define PITCH_INERTIA 19.0f
+#define ROLL_INERTIA 80.0f
+#define MACHINE_MASS 8570.0f
+#define MACHINE_INERTIA 5071.0f
 
 // Machine Geometry Constants
-#define TRACK_LENGTH 2.5f
-#define TRACK_WIDTH 0.4f
-#define TRACK_GAUGE 1.5f
+#define TRACK_LENGTH 1.7112f
+#define TRACK_WIDTH 0.4572f
+#define TRACK_GAUGE 1.5494f
 
 #define ARM_DAMPING 30000.0f  // Rotational damping on the loader arm
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch
@@ -43,12 +43,12 @@ static int global_episode_count = 0;
 
 #define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
 
-#define ARM_MIN -0.5f  // (rad)
-#define ARM_MAX 0.5f   // (rad)
-#define PITCH_MIN (-30.0f * (PI / 180.0f)) // (rad)
-#define PITCH_MAX (45.0f * (PI / 180.0f))  // (rad)
-#define ROLL_MIN (-20.0f * (PI / 180.0f))  // (rad)
-#define ROLL_MAX (20.0f * (PI / 180.0f))   // (rad)
+#define ARM_MIN -0.1f  // (rad)
+#define ARM_MAX 0.45f   // (rad)
+#define PITCH_MIN -0.436f // (rad)
+#define PITCH_MAX 0.96f  // (rad)
+#define ROLL_MIN -0.175f  // (rad)
+#define ROLL_MAX 0.175f   // (rad)
 
 #define SPATIAL_OBS_SIZE 50
 
@@ -199,8 +199,8 @@ static inline void env_get_observation(SoilEnv* env, Observation* obs) {
     float sin_y = sinf(blade->yaw);
 
     float half_obs = SPATIAL_OBS_SIZE / 2.0f;
-    float start_grid_x = (blade->x / CELL_SIZE) - half_obs * cos_y + half_obs * sin_y;
-    float start_grid_y = (blade->y / CELL_SIZE) - half_obs * sin_y - half_obs * cos_y;
+    float start_grid_x = (blade->loader_x / CELL_SIZE) - half_obs * cos_y + half_obs * sin_y;
+    float start_grid_y = (blade->loader_y / CELL_SIZE) - half_obs * sin_y - half_obs * cos_y;
 
     for (int i = 0; i < SPATIAL_OBS_SIZE; i++) {
         float row_grid_x = start_grid_x + i * cos_y;
@@ -235,8 +235,8 @@ static inline void precompute_FEE(SoilEnv* env, float rake_angle, float alpha) {
 }
 
 static inline void env_reset(SoilEnv* env) {
-    int episode = __atomic_fetch_add(&global_episode_count, 1, __ATOMIC_RELAXED);
-    float phase = (float)episode / 50000000.0f;
+    // int episode = __atomic_fetch_add(&global_episode_count, 1, __ATOMIC_RELAXED);
+    float phase = 1.0f; //(float)episode / 50000000.0f;
     if (phase > 1.0f) phase = 1.0f;
 
     // 1. Initial Multi-scale Noise
@@ -276,7 +276,7 @@ static inline void env_reset(SoilEnv* env) {
     }
 
     // Blade initialization (before goal map to sync width)
-    env->blade.width = 2.2f;
+    env->blade.width = 1.85f;
 
     // 3. Goal Map: Slot and Pile
     // Determine Pile Parameters First
@@ -377,15 +377,15 @@ static inline void env_reset(SoilEnv* env) {
     env->blade.x = start_x - (start_offset - 2.0f) * cos_a;
     env->blade.y = start_y - (start_offset - 2.0f) * sin_a;
     env->blade.z = 0.8f;
-    env->blade.rake_angle = 45.0f * (PI / 180.0f);
+    env->blade.rake_angle = 0;  //45.0f * (PI / 180.0f);
     env->blade.surcharge_Q = 0.0f;
     env->blade.pitch = -0.35f;
     env->blade.roll = 0.0f;
     env->blade.yaw = angle;
     env->blade.v_linear = 0.0f;
     env->blade.v_rotational = 0.0f;
-    env->blade.arm_height = 0.25f; // (rad)
-    env->blade.blade_pitch_rel = 0.0f;
+    env->blade.arm_height = ARM_MIN; // (rad)
+    env->blade.blade_pitch_rel = 0.1f; // pull back slightly to counteract ARM_MIN and make blade vertical
     env->blade.blade_roll_rel = 0.0f;
     env->blade.blade_yaw_rel = 0.0f;
     env->blade.effort_lift = 0.0f;
@@ -507,56 +507,23 @@ static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_S
     //     reward += arm_penalty;
     // }
 
-    // float stationary_penalty = 0.0f;
-    // // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
-    // if (fabsf(env->blade.effort_linear) < 0.05f) {
-    //     stationary_penalty = -0.01f;
-    //     reward += stationary_penalty;
-    // }
+    float stationary_penalty = 0.0f;
+    // 2. Stationary Penalty: Prevent agent from sitting still to avoid effort penalties
+    if (fabsf(env->blade.effort_linear) < 0.1f) {
+        stationary_penalty = 0.05f;
+        reward -= stationary_penalty;
+    }
 
     // 3. Jitter Penalty: Penalize rapid movement/shaking of the blade actuators (arm lift, pitch, roll)
-    float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height) * 1.0f +
-                           (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 1.0f +
-                           (env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 1.0f;
-    float jitter_term = -jitter_penalty * 0.02f;
-    // reward += jitter_term;
-
-    // add huge min reward if the vehicle moves off the map
-    // float off_map_penalty = 0.0f;
-    // float max_coord = GRID_SIZE * CELL_SIZE;
-    // if (env->blade.loader_x < 0.0f || env->blade.loader_x > max_coord ||
-    //     env->blade.loader_y < 0.0f || env->blade.loader_y > max_coord ||
-    //     env->blade.x < 0.0f || env->blade.x > max_coord ||
-    //     env->blade.y < 0.0f || env->blade.y > max_coord) {
-    //     off_map_penalty = -0.1f;
-    //     reward += off_map_penalty;
-    // }
-
-    // if (off_map_penalty < 0.0f) {
-    //     env->count_off_map += 1.0f;
-    // }
+    float jitter_penalty = (env->blade.vel_arm_height * env->blade.vel_arm_height * env->blade.vel_arm_height) * 0.25f +
+                           (env->blade.vel_pitch_rel * env->blade.vel_pitch_rel * env->blade.vel_pitch_rel) * 0.25f +
+                           (env->blade.vel_roll_rel * env->blade.vel_roll_rel * env->blade.vel_roll_rel) * 0.25f;
+    float jitter_term = -jitter_penalty * 0.01f;
+    reward += jitter_term;
 
     if (jitter_term < -0.05f) {
         env->count_jitter += 1.0f;
     }
-
-    // if (reward < -0.5f) {
-    //     env->count_large_neg_rewards += 1.0f;
-    //     printf("[DozeRL Warning] Large negative reward detected (%.4f) at step %d:\n"
-    //            "  - Terrain reward: %.4f (prev_err: %.2f, curr_err: %.2f, init_err: %.2f)\n"
-    //            "  - Push reward: %.4f\n"
-    //            "  - Arm penalty: %.4f (arm_height: %.2f)\n"
-    //            "  - Stationary penalty: %.4f (effort_linear: %.2f)\n"
-    //            "  - Jitter penalty: %.4f (vel_arm: %.2f, vel_pitch: %.2f, vel_roll: %.2f)\n"
-    //            "  - Off-map penalty: %.4f (loader: %.2f, %.2f, blade: %.2f, %.2f)\n",
-    //            reward, env->step_num,
-    //            terrain_reward, prev_error, current_error, env->initial_error,
-    //            push_reward > 0.0f ? push_reward : 0.0f,
-    //            arm_penalty, env->blade.arm_height,
-    //            stationary_penalty, env->blade.effort_linear,
-    //            jitter_term, env->blade.vel_arm_height, env->blade.vel_pitch_rel, env->blade.vel_roll_rel,
-    //            off_map_penalty, env->blade.loader_x, env->blade.loader_y, env->blade.x, env->blade.y);
-    // }
 
     return reward;
 }
@@ -643,17 +610,17 @@ static inline void simulate_erosion(SoilEnv* env) {
 static inline void update_kinematics(SoilEnv* env) {
     Blade* blade = &env->blade;
     float cos_y = cosf(blade->yaw), sin_y = sinf(blade->yaw);
-    
+
     float tan_phi = tanf(env_phi);
     if (tan_phi < 0.01f) tan_phi = 0.01f;
-    
+
     float N_q_b = expf(PI * tan_phi) * powf(tanf((PI / 4.0f) + (env_phi / 2.0f)), 2.0f);
     float N_c_b = (N_q_b - 1.0f) / tan_phi;
     float N_gamma_b = 2.0f * (N_q_b + 1.0f) * tan_phi;
-    
+
     float q_u = env_c * N_c_b + 0.5f * env_gamma * TRACK_WIDTH * N_gamma_b;
     float ground_pressure = (MACHINE_MASS * GRAVITY) / (2.0f * TRACK_LENGTH * TRACK_WIDTH);
-    
+
     float compaction_rate = (ground_pressure / q_u) * 0.5f; 
     if (compaction_rate > 0.8f) compaction_rate = 0.8f;
     if (compaction_rate < 0.05f) compaction_rate = 0.05f;
@@ -669,17 +636,17 @@ static inline void update_kinematics(SoilEnv* env) {
     for (int i = min_i; i <= max_i; i++) {
         for (int j = min_j; j <= max_j; j++) {
             if (env->grid_L[i][j] < 0.001f) continue;
-            
+
             float dx = (i * CELL_SIZE) - blade->loader_x;
             float dy = (j * CELL_SIZE) - blade->loader_y;
-            
+
             float lx = dx * cos_y + dy * sin_y;
             float ly = -dx * sin_y + dy * cos_y;
-            
+
             if (fabsf(lx) <= TRACK_LENGTH / 2.0f) {
                 if (fabsf(ly - TRACK_GAUGE / 2.0f) <= TRACK_WIDTH / 2.0f || 
                     fabsf(ly + TRACK_GAUGE / 2.0f) <= TRACK_WIDTH / 2.0f) {
-                    
+
                     float compacted = env->grid_L[i][j] * compaction_rate;
                     env->grid_L[i][j] -= compacted;
                     env->grid_H[i][j] += compacted / SWELL_RATIO;
@@ -697,10 +664,10 @@ static inline void update_kinematics(SoilEnv* env) {
         sum_x2 += lx * lx;
         float p_lx = blade->loader_x + lx * cos_y - hW * sin_y, p_ly = blade->loader_y + lx * sin_y + hW * cos_y;
         float p_rx = blade->loader_x + lx * cos_y + hW * sin_y, p_ry = blade->loader_y + lx * sin_y - hW * cos_y;
-        
+
         int ixl = (int)(p_lx/CELL_SIZE), iyl = (int)(p_ly/CELL_SIZE);
         int ixr = (int)(p_rx/CELL_SIZE), iyr = (int)(p_ry/CELL_SIZE);
-        
+
         float zl = 1.0f, zr = 1.0f;
         if (ixl >= 0 && ixl < GRID_SIZE && iyl >= 0 && iyl < GRID_SIZE) {
             zl = env->grid_H[ixl][iyl] + env->grid_L[ixl][iyl];
@@ -708,7 +675,7 @@ static inline void update_kinematics(SoilEnv* env) {
         if (ixr >= 0 && ixr < GRID_SIZE && iyr >= 0 && iyr < GRID_SIZE) {
             zr = env->grid_H[ixr][iyr] + env->grid_L[ixr][iyr];
         }
-        
+
         sum_z_left += zl; sum_z_right += zr;
         sum_xz_left += lx * zl; sum_xz_right += lx * zr;
     }
@@ -717,14 +684,16 @@ static inline void update_kinematics(SoilEnv* env) {
     blade->roll = atan2f((sum_z_left - sum_z_right)/num_samples, TRACK_GAUGE);
 
     // Pivot arm kinematics
-    float arm_r = 3.35f;
-    float pivot_x = -1.0f;
-    float pivot_z = 1.5f;
+    float arm_r = 3.8f;
+    float blade_pitch_length = 0.83019f;
+    float pivot_x = -2.2f;
+    float pivot_z = 1.8987f;
 
     // Local coordinates of the blade relative to chassis origin (loader_z is at track ground level)
     float theta = blade->arm_height; // arm_height represents the arm pivot angle (rad)
-    float x_blade_local = pivot_x + arm_r * cosf(theta);
-    float z_blade_local = pivot_z + arm_r * sinf(theta);
+    float pitch_total = theta + blade->blade_pitch_rel; // pitch relative to global
+    float x_blade_local = pivot_x + arm_r * cosf(theta) + blade_pitch_length * cosf(pitch_total);
+    float z_blade_local = pivot_z + arm_r * sinf(theta) + blade_pitch_length * sinf(pitch_total);
 
     // Apply chassis roll rotation
     float cos_r = cosf(blade->roll);
@@ -801,7 +770,7 @@ static inline void simulate_step(SoilEnv* env, float dt) {
     if (blade->blade_roll_rel < ROLL_MIN) blade->blade_roll_rel = ROLL_MIN;
     if (blade->blade_roll_rel > ROLL_MAX) blade->blade_roll_rel = ROLL_MAX;
 
-    blade->rake_angle = (45.0f * (PI/180.0f)) + blade->blade_pitch_rel + blade->pitch;
+    blade->rake_angle = (45.0f * (PI/180.0f)) + blade->blade_pitch_rel + blade->pitch + blade->arm_height;
     precompute_FEE(env, blade->rake_angle, 0.0f);
 
     float slip = blade->last_force / calculate_max_traction(); 
@@ -897,7 +866,13 @@ static inline void simulate_step(SoilEnv* env, float dt) {
     }
     blade->surcharge_Q = current_surcharge_vol * LOOSE_SOIL_DENSITY * GRAVITY;
     if (outfile && env->step_num % 1 == 0) {
-        struct { int step; float p[16]; int gs; float cs; } h = { env->step_num, {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, GRID_SIZE, CELL_SIZE };
+        struct { int step; float p[16]; float e[6]; int gs; float cs; } h = { 
+            env->step_num, 
+            {blade->loader_x, blade->loader_z, blade->loader_y, blade->yaw, blade->pitch, blade->roll, blade->arm_height, blade->vel_arm_height, blade->blade_pitch_rel, blade->vel_pitch_rel, blade->blade_roll_rel, blade->vel_roll_rel, blade->blade_yaw_rel, blade->vel_yaw_rel, blade->v_linear, blade->v_rotational}, 
+            {blade->effort_linear, blade->effort_rotational, blade->effort_lift, blade->effort_pitch, blade->effort_roll, blade->effort_yaw},
+            GRID_SIZE, 
+            CELL_SIZE 
+        };
         fwrite(&h, sizeof(h), 1, outfile);
         float flat[GRID_SIZE * GRID_SIZE];
         for (int i = 0; i < GRID_SIZE; i++) {
