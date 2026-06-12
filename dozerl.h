@@ -465,7 +465,7 @@ static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_S
             float total_h = env->grid_H[i][j] + env->grid_L[i][j];
             float target = env->grid_G[i][j];
             float orig = env->original_H[i][j];
-            
+
             float threshold = fmaxf(target, orig);
             if (total_h > threshold) {
                 float excess = total_h - threshold;
@@ -480,11 +480,18 @@ static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_S
             float H_cfm = H_minus_val - H_goal;
             float H_cfp = H_plus_val - H_goal;
 
-            r1 += w_c * fmaxf(0.0f, fminf(-dH, H_cfm));
-            r2 += w_oc * fminf(0.0f, fmaxf(dH, H_cfp)); // Overcut
-            r3 += w_f * fmaxf(0.0f, fminf(dH, -H_cfm));
-            // r4 += w_oc * fminf(0.0f, fmaxf(-dH, -H_cfp)); // Overfill
-            
+            if (H_cfm >= 0 && dH < 0) {
+                // Cut region, cut in progress
+                r1 += w_c * fmaxf(0.0f, fminf(-dH, H_cfm));
+                r2 += w_oc * fminf(0.0f, fmaxf(dH, H_cfp)); // Overcut
+            } else if (H_cfm < 0 && dH > 0) {
+                // Fill region, fill in progress
+                r3 += w_f * fmaxf(0.0f, fminf(dH, -H_cfm));
+            } else if (H_cfm < 0 && dH < 0) {
+                // Fill region, cut in progress
+                r4 += w_oc * dH; // Penalty for cutting in a fill region
+            }
+
             if (env->H_cfp_max > 1e-4f) {
                 // Normalize the continuous penalty by grid size so it doesn't wash out dH rewards
                 r5 -= (w_h * fabsf(H_cfp) / env->H_cfp_max) / (GRID_SIZE * GRID_SIZE);
