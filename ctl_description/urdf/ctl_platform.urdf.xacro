@@ -1,0 +1,460 @@
+<?xml version="1.0"?>
+<!--
+ File: ctl_platform.urdf.xacro
+ Purpose: Defines the core physical structure of the CTL robot.
+ 
+ This file contains:
+ - Core robot structure (base_link, chassis)
+ - Blade assembly with pitch, roll, and yaw joints
+ - Track system integration
+ 
+ Usage:
+ <xacro:ctl_platform
+   prefix=""
+   is_sim="false"
+   namespace="ctl"
+   mesh_host="localhost"
+   mesh_port="8000"
+ />
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- Include sensor components -->
+  <xacro:include filename="$(find ctl_description)/urdf/ctl/ctl_sensors.urdf.xacro"/>
+  
+  <!-- Include track components -->
+  <xacro:include filename="$(find ctl_description)/urdf/ctl/ctl_tracks.urdf.xacro"/>
+
+  <!-- =========================================================
+    Macro: ctl_platform
+    
+    Arguments:
+    - prefix: Robot model prefix (default: "")
+    - is_sim: Whether running in simulation (default: false)
+    - namespace: ROS namespace (default: "ctl")
+    - mesh_host: Host for mesh files (default: "localhost")
+    - mesh_port: Port for mesh server (default: "8000")
+    
+    This macro defines the core CTL robot structure.
+  ========================================================= -->
+  <xacro:macro name="ctl_platform" params="
+      prefix:=''
+      is_sim:=false
+      namespace:='ctl'
+      mesh_host:='10.1.101.10'
+      mesh_port:='8000'
+      zed_localization:=false
+  ">
+    <!-- ===================================================================
+         SECTION 1: CONSTANTS & PROPERTIES
+         Physical properties and conversion factors
+    =================================================================== -->
+    
+    <!-- 1.1: Unit Conversion Constants -->
+    <xacro:property name="inches_to_meters" value="0.0254"/>
+    <xacro:property name="PI" value="3.1415926535897931"/>
+    
+    <!-- 1.2: Robot Dimensions -->
+    <xacro:property name="base_mass" value="34.0"/> 
+    <xacro:property name="base_width" value="$(eval 35 * inches_to_meters)"/>
+    <xacro:property name="base_length" value="$(eval 100 * inches_to_meters)"/>
+    <xacro:property name="base_height" value="$(eval 73.5 * inches_to_meters)"/>
+    
+    <!-- 1.3: Additional Parameters -->
+    <xacro:property name="caster_wheel_mass" value="1.0"/>
+    <xacro:property name="caster_wheel_radius" value="$(eval 8 * inches_to_meters)"/>
+    <xacro:property name="caster_wheel_len" value="$(eval 18 * inches_to_meters)"/>
+    <xacro:property name="z_offset" value="$(eval 2.5 * inches_to_meters)"/>
+    
+    <!-- Zed stuff -->
+    <xacro:property name="PI" value="3.1415926535897931"/>
+    <xacro:property name="baseline" value="0.12" />
+    <xacro:property name="zed_height" value="0.032" />
+    <xacro:property name="bottom_slope" value="0.0" />
+    <xacro:property name="screw_offset_x" value="0.0" />
+    <xacro:property name="screw_offset_z" value="-0.016" />
+    <xacro:property name="optical_offset_x" value="-0.01" />
+    <xacro:property name="mono" value="false" />
+    <xacro:property name="model" value="zedx" />
+    <xacro:property name="parent" value="base_link" />
+
+    <!-- ===================================================================
+         SECTION 2: HELPER MACROS
+         Reusable macros for inertia calculations
+    =================================================================== -->
+    
+    <!-- 2.1: Box Inertia Macro -->
+    <xacro:macro name="box_inertia" params="m w h d">
+      <inertial>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 ${pi/2}"/>
+        <mass value="${m}"/>
+        <inertia
+          ixx="${(m/12) * (h*h + d*d)}"
+          ixy="0.0"
+          ixz="0.0"
+          iyy="${(m/12) * (w*w + d*d)}"
+          iyz="0.0"
+          izz="${(m/12) * (w*w + h*h)}"/>
+      </inertial>
+    </xacro:macro>
+    
+    <!-- 2.2: Cylinder Inertia Macro -->
+    <xacro:macro name="cylinder_inertia" params="m r h">
+      <inertial>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <mass value="${m}"/>
+        <inertia
+          ixx="${(m/12) * (3*r*r + h*h)}"
+          ixy="0"
+          ixz="0"
+          iyy="${(m/12) * (3*r*r + h*h)}"
+          iyz="0"
+          izz="${(m/2) * (r*r)}"/>
+      </inertial>
+    </xacro:macro>
+    
+    <!-- ===================================================================
+         SECTION 3: BASE COMPONENTS
+         Core structural components of the robot
+    =================================================================== -->
+    <!-- <xacro:if value="${enable_gnss}">
+      <link name="${prefix}front_gnss_link" />
+      <joint name="${prefix}front_gnss_joint" type="fixed">
+        <parent link="${prefix}front_camera_link"/>
+        <child link="${prefix}front_gnss_link"/>
+        <xacro:insert_block name="gnss_origin" />
+      </joint>
+    </xacro:if> -->
+
+    <!-- <link name="front_gnss_link">
+    </link>
+
+    <joint name="front_gnss_joint" type="fixed">
+      <parent link="zed_back_camera_link"/>
+      <child link="front_gnss_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint> -->
+
+    <!-- <link name="zed_back_camera_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.035"/>
+        <inertia ixx="0.001" ixy="0" ixz="0"
+                 iyy="0.001" iyz="0" izz="0.001"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="${PI/2} 0 ${PI/2}"/>
+        <geometry>
+          <mesh scale="0.001 0.001 0.001" filename="http://${mesh_host}:${mesh_port}/sensors/ZEDX.STL"/>
+        </geometry>
+        <material name="gray"/>
+      </visual>
+      <collision>
+        <geometry>
+          <mesh scale="0.001 0.001 0.001" filename="http://${mesh_host}:${mesh_port}/sensors/ZEDX.STL"/>
+        </geometry>
+      </collision>
+    </link> -->
+    
+    <!-- 
+    If we have the zed_localization parameter set to true, then "zed_back_camera_joint"
+    joint has "zed_back_camera_link" as a parent and "base_link" as a child.
+    If we have the zed_localization parameter set to false, then do he opposite.
+    -->
+    <!-- Define the position of the rear camera with respect to the reference link -->
+    <!-- Copied from zed_multi_ctl.urdf.xacro on Jetson. Need to decide where this lives. Putting here for now.-->
+    <!-- <link name="zed_back_camera_intermediate_link" />
+    <joint name="zed_back_camera_joint" type="fixed">
+        <parent link="zed_back_camera_link"/>
+        <child link="zed_back_camera_intermediate_link"/>
+        <origin xyz="0 0 0" rpy="0.015 0.342 ${PI}" />
+    </joint>
+    <joint name="zed_back_camera_intermediate_joint" type="fixed">
+        <parent link="zed_back_camera_intermediate_link"/>
+        <child link="zed_back_camera_multi_link"/>
+        <origin xyz="1.8 0.0 -1.1" rpy="0 0 0" />
+    </joint> -->
+
+    <!-- <joint name="zed_back_camera_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="zed_back_camera_link"/>
+      <origin xyz="0.7 0 1.8" rpy="0 -0.628319 ${PI}"/>
+    </joint> -->
+
+
+    <!-- <link name="zed_back_camera_depth_frame_link"/>
+
+    <joint name="zed_back_camera_depth_joint" type="fixed">
+      <parent link="zed_back_camera_link"/>
+      <child link="zed_back_camera_depth_frame_link"/>
+      <origin xyz="0 0 0" rpy="${-PI/2} 0 ${-PI/2}"/>
+    </joint> -->
+
+    <!-- Camera Center -->
+    <!-- <link name="zed_back_camera_center"/>
+    <joint name="zed_back_camera_center_joint" type="fixed">
+      <parent link="zed_back_camera_link"/>
+      <child link="zed_back_camera_center"/>
+      <origin xyz="0 0 ${zed_height/2}" rpy="0 ${bottom_slope} 0" />
+    </joint> -->
+    
+    <!-- zed_back Camera left Sensor -->
+    <!-- <link name="zed_back_left_camera_frame"/>
+    <joint name="zed_back_left_camera_joint" type="fixed">
+      <parent link="zed_back_camera_center"/>
+      <child link="zed_back_left_camera_frame"/>
+      <origin xyz="${optical_offset_x} ${baseline/2} 0" rpy="0 0 0" />
+    </joint>
+
+    <link name="zed_back_left_camera_optical_frame"/>
+    <joint name="zed_back_left_camera_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="-${PI/2} 0.0 -${PI/2}"/>
+      <parent link="zed_back_left_camera_frame"/>
+      <child link="zed_back_left_camera_optical_frame"/>
+    </joint> -->
+
+    <!-- Front Camera zed_back Sensor -->
+    <!-- <link name="zed_back_right_camera_frame"/>
+    <joint name="zed_back_right_camera_joint" type="fixed">
+      <parent link="zed_back_camera_center"/>
+      <child link="zed_back_right_camera_frame"/>
+      <origin xyz="${optical_offset_x} -${baseline/2} 0" rpy="0 0 0" />
+    </joint>
+
+    <link name="zed_back_right_camera_optical_frame"/>
+    <joint name="zed_back_right_camera_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="-${PI/2} 0.0 -${PI/2}"/>
+      <parent link="zed_back_right_camera_frame"/>
+      <child link="zed_back_right_camera_optical_frame"/>
+    </joint> -->
+
+    <!-- 3.1: Base Links -->
+    <link name="base_link"/>
+    <link name="base_footprint"/>
+    <!-- <link name="base_footprint_as_parent"/>
+    <link name="zed_map_calibration_link"/> -->
+
+    <!-- This is a dumb fix for now to allow the zeds to use the link on the ground as the reference -->
+    <!-- <joint name="base_footprint_as_parent_joint" type="fixed">
+      <parent link="base_footprint_as_parent"/>
+      <child link="zed_map_calibration_link"/>
+      <origin xyz="0 0 0" rpy="0 -0.0 0"/>
+    </joint>
+
+    <joint name="zed_map_calibration_joint" type="fixed">
+      <parent link="zed_map_calibration_link"/>
+      <child link="base_link"/>
+      <origin xyz="0 0 0.61849" rpy="0 0 0"/>
+    </joint> -->
+    
+    <joint name="footprint_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="base_footprint"/>
+      <origin xyz="0 0 -0.61849" rpy="0 0 0"/>
+    </joint>
+    
+    <!-- 3.2: Chassis -->
+    <link name="chassis_link" type="fixed">
+      <inertial>
+        <inertia ixx="3711.75090" ixy="0.01528" ixz="129.10273"
+                 iyy="5543.60345" iyz="0.00446" izz="5071.37030"/>
+        <origin rpy="0 0 0" xyz="-1.31743 0 0.77482"/>
+        <mass value="8570.0"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/base_link.STL"/>
+        </geometry>
+        <material name="chassis_material"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/base_link.STL"/>
+        </geometry>
+      </collision>
+    </link>
+    
+    <joint name="chassis_joint" type="fixed">
+      <parent link="base_footprint"/>
+      <child link="chassis_link"/>
+      <origin xyz="1.1049 0 0" rpy="0 0 0"/>
+    </joint>
+    
+    <!-- ===================================================================
+         SECTION 4: MOBILITY SYSTEM
+         Track and wheel configuration using ctl_tracks macro
+    =================================================================== -->
+    
+    <!-- Add tracks and wheels to the base -->
+    <xacro:ctl_tracks prefix="" base_link="base_footprint"/>
+    
+    <!-- ===================================================================
+         SECTION 5: BLADE SYSTEM
+         Components for blade attachment and control
+    =================================================================== -->
+    
+    <!-- 5.1: Lift Pivot Assembly -->
+    <link name="virtual_lift_arm_link">
+      <inertial>
+           <origin xyz="0 0 0" rpy="0 0 0"/>
+           <mass value="10.0"/>
+           <inertia
+                ixx="1.0" ixy="0.0" ixz="0.0"
+                iyy="1.0" iyz="0.0" izz="1.0"/>
+      </inertial>
+      <visual>
+        <origin xyz=".625 0 .28" rpy="0 -.15 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/loader_arm.STL"/>
+        </geometry>
+        <material name="chassis_material"/>
+      </visual>
+      <collision>
+        <origin xyz=".625 0 .28" rpy="0 -.15 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/loader_arm.STL"/>
+        </geometry>
+      </collision>
+    </link>
+    
+    <joint name="virtual_lift_arm_joint" type="revolute">
+      <parent link="base_link"/>
+      <child link="virtual_lift_arm_link"/>
+      <origin xyz="-2.2 0 1.2802" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="-.1" upper=".45" effort="0.0" velocity="0.0"/>
+    </joint>
+    
+    <!-- 5.2: Blade Frame with Pitch Joint -->
+    <link name="blade_pitch_link">
+      <inertial>
+        <origin xyz="0.214071201965655 6.08177668379206e-07 0.113459600628013" rpy="0 0 0"/>
+        <mass value="234.917330182603"/>
+        <inertia ixx="31.6105200635768" ixy="0" ixz="0"
+                 iyy="6.74728996509347" iyz="0" izz="28.2908426905722"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/blade_frame.STL"/>
+        </geometry>
+        <material name="translucent_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/blade_frame.STL"/>
+        </geometry>
+      </collision>
+    </link>
+    
+    <joint name="blade_pitch_joint" type="revolute">
+      <parent link="virtual_lift_arm_link"/>
+      <child link="blade_pitch_link"/>
+      <origin xyz="3.8 0 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="-0.436" upper="0.96" effort="0.0" velocity="0.0"/>
+    </joint>
+    
+    <!-- 5.3: Blade Roll Joint -->
+    <link name="blade_roll_link">
+      <inertial>
+        <inertia ixx="3711.75090" ixy="0.01528" ixz="129.10273"
+                 iyy="5543.60345" iyz="0.00446" izz="5071.37030"/>
+        <origin rpy="0 0 0" xyz="-1.31743 0 0.77482"/>
+        <mass value="8570.0"/>
+      </inertial>
+     </link>   
+    
+    <joint name="blade_roll_joint" type="revolute">
+      <parent link="blade_pitch_link"/>
+      <child link="blade_roll_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-.175" upper=".175" effort="0.0" velocity="0.0"/>
+    </joint>
+  
+    
+    <!-- 5.4: Blade Yaw & Main Blade Link -->
+    <joint name="blade_yaw_joint" type="revolute">
+      <parent link="blade_roll_link"/>
+      <child link="blade_yaw_link"/>
+      <origin  xyz="0.56019 0.0 0.013" rpy="0.0 0.0 0.0"/>
+      <limit lower="-0.5236" upper="0.5236" effort="0.0" velocity="0.0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+    
+    <link name="blade_yaw_link">
+      <inertial>
+        <origin xyz="0.20810 0 0.12398" rpy="0 ${-3*PI/180} 0"/>
+        <mass value="244.71"/>
+        <inertia
+          ixx="79.52" ixy="0.080781" ixz="1.5426"
+          iyy="12.318" iyz="-0.28139" izz="69.672"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/blade.STL"/>
+        </geometry>
+        <material name="translucent_black"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="http://${mesh_host}:${mesh_port}/ctl/blade.STL"/>
+        </geometry>
+      </collision>
+    </link>
+    
+    <!-- 5.5: Blade Edge Link -->
+    <link name="blade_edge_link">
+      <visual>
+        <geometry>
+          <box size="0.01 1.85 0.76"/>
+        </geometry>
+        <material name="translucent_black"/>
+      </visual>
+    </link>
+    
+    <joint name="blade_edge_joint" type="fixed">
+      <parent link="blade_yaw_link"/>
+      <child link="blade_edge_link"/>
+      <!-- change these vals later!! -->
+      <origin xyz="0.27 0 0.07" rpy="0 ${-11 * PI/180} 0"/>
+    </joint>
+    
+    <!-- ===================================================================
+         SECTION 6: SENSORS
+         Add sensor components from ctl_sensors.urdf.xacro
+    =================================================================== -->
+    <xacro:ctl_sensors 
+      prefix="" 
+      parent="base_link" 
+      footprint="base_footprint"
+      mesh_host="${mesh_host}"
+      mesh_port="${mesh_port}"
+    />
+    
+  </xacro:macro>
+  
+  <!-- Main robot macro that includes platform and all components -->
+  <xacro:macro name="ctl" params="
+      prefix:=''
+      is_sim:=false
+      namespace:='ctl'
+      mesh_host:='localhost'
+      mesh_port:='8000'
+  ">
+    <xacro:ctl_platform
+      prefix=""
+      is_sim="${is_sim}"
+      namespace="${namespace}"
+      mesh_host="${mesh_host}"
+      mesh_port="${mesh_port}"
+    />
+  </xacro:macro>
+  
+</robot>

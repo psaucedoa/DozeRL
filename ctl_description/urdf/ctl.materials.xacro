@@ -1,0 +1,241 @@
+<?xml version="1.0"?>
+<!--
+ File: ctl.materials.xacro
+ Purpose: Defines materials for visualization of the CTL robot.
+ 
+ This file provides:
+ - Basic colors (with proper transparency)
+ - Material definitions for robot parts
+ - Gazebo material mappings
+ - Specialized textures and finishes
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+  
+  <!-- ===================================================================
+       SECTION 1: BASIC COLORS
+       Fundamental colors with appropriate alpha values
+  =================================================================== -->
+  
+  <!-- 1.1: Neutral Colors -->
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+  
+  <material name="black">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+  
+  <material name="gray">
+    <color rgba="0.5 0.5 0.5 1.0"/>
+  </material>
+  
+  <material name="dark_gray">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+  
+  <material name="light_gray">
+    <color rgba="0.7 0.7 0.7 1.0"/>
+  </material>
+  
+  <!-- 1.2: Primary Colors -->
+  <material name="red">
+    <color rgba="1.0 0.0 0.0 1.0"/>
+  </material>
+  
+  <material name="green">
+    <color rgba="0.0 1.0 0.0 1.0"/>
+  </material>
+  
+  <material name="blue">
+    <color rgba="0.0 0.0 1.0 1.0"/>
+  </material>
+  
+  <!-- 1.3: Secondary Colors -->
+  <material name="yellow">
+    <color rgba="1.0 1.0 0.0 1.0"/>
+  </material>
+  
+  <material name="orange">
+    <color rgba="1.0 0.5 0.0 1.0"/>
+  </material>
+  
+  <material name="purple">
+    <color rgba="0.5 0.0 0.5 1.0"/>
+  </material>
+  
+  <material name="cyan">
+    <color rgba="0.0 1.0 1.0 1.0"/>
+  </material>
+  
+  <material name="magenta">
+    <color rgba="1.0 0.0 1.0 1.0"/>
+  </material>
+  
+  <!-- 1.4: Transparent Colors (for visualization) -->
+  <material name="translucent_white">
+    <color rgba="1.0 1.0 1.0 0.5"/>
+  </material>
+  
+  <material name="translucent_black">
+    <color rgba="0.1 0.1 0.1 0.5"/>
+  </material>
+  
+  <material name="translucent_red">
+    <color rgba="1.0 0.0 0.0 0.4"/>
+  </material>
+  
+  <material name="translucent_blue">
+    <color rgba="0.0 0.0 1.0 0.4"/>
+  </material>
+  
+  <!-- ===================================================================
+       SECTION 2: SPECIALIZED MATERIALS
+       Materials specific to robot components
+  =================================================================== -->
+  
+  <!-- 2.1: Chassis Materials -->
+  <material name="chassis_material">
+    <!-- Military tan color typical for construction equipment -->
+    <color rgba="0.8 0.65 0.44 .5"/>
+  </material>
+  
+  <material name="chassis_dark">
+    <!-- Darker shade for accent parts -->
+    <color rgba="0.6 0.6 0.4 1.0"/>
+  </material>
+  
+  <!-- 2.2: Metal Materials -->
+  <material name="steel">
+    <color rgba="0.7 0.7 0.8 1.0"/>
+  </material>
+  
+  <material name="aluminum">
+    <color rgba="0.85 0.85 0.87 1.0"/>
+  </material>
+  
+  <material name="copper">
+    <color rgba="0.85 0.55 0.4 1.0"/>
+  </material>
+  
+  <material name="brass">
+    <color rgba="0.88 0.78 0.5 1.0"/>
+  </material>
+  
+  <!-- 2.3: Plastic Materials -->
+  <material name="black_plastic">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+  
+  <material name="red_plastic">
+    <color rgba="0.9 0.1 0.1 1.0"/>
+  </material>
+  
+  <material name="safety_yellow">
+    <!-- High-visibility safety color -->
+    <color rgba="1.0 0.83 0.0 1.0"/>
+  </material>
+  
+  <!-- 2.4: Component-Specific Materials -->
+  <material name="track_material">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  
+  <material name="wheel_material">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+  
+  <material name="blade_material">
+    <color rgba="0.9 0.7 0.0 1.0"/>
+  </material>
+  
+  <material name="sensor_housing">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  
+  <material name="glass">
+    <color rgba="0.8 0.9 1.0 0.4"/>
+  </material>
+  
+  <material name="led_inactive">
+    <color rgba="0.3 0.3 0.3 1.0"/>
+  </material>
+  
+  <material name="led_active_red">
+    <color rgba="1.0 0.0 0.0 1.0"/>
+  </material>
+  
+  <material name="led_active_green">
+    <color rgba="0.0 1.0 0.0 1.0"/>
+  </material>
+  
+  <!-- ===================================================================
+       SECTION 3: GAZEBO MATERIAL MAPPINGS
+       Gazebo-specific material assignments for simulation
+  =================================================================== -->
+  <xacro:macro name="gazebo_material_mapping">
+    <!-- 
+    This macro can be used to ensure consistent mapping between 
+    URDF materials and Gazebo materials in simulation.
+    Usage: Simply include this macro in your gazebo.urdf.xacro file.
+    -->
+    
+    <!-- Basic colors -->
+    <gazebo reference="white">
+      <material>Gazebo/White</material>
+    </gazebo>
+    
+    <gazebo reference="black">
+      <material>Gazebo/Black</material>
+    </gazebo>
+    
+    <gazebo reference="gray">
+      <material>Gazebo/Gray</material>
+    </gazebo>
+    
+    <!-- Metal materials -->
+    <gazebo reference="steel">
+      <material>Gazebo/Grey</material>
+    </gazebo>
+    
+    <gazebo reference="aluminum">
+      <material>Gazebo/SkyBlue</material>
+    </gazebo>
+    
+    <gazebo reference="brass">
+      <material>Gazebo/Gold</material>
+    </gazebo>
+    
+    <!-- Component materials -->
+    <gazebo reference="chassis_material">
+      <material>Gazebo/Turquoise</material>
+    </gazebo>
+    
+    <gazebo reference="track_material">
+      <material>Gazebo/DarkGrey</material>
+    </gazebo>
+    
+    <gazebo reference="blade_material">
+      <material>Gazebo/Yellow</material>
+    </gazebo>
+  </xacro:macro>
+  
+  <!-- ===================================================================
+       SECTION 4: TEXTURE DEFINITIONS
+       Materials with texture capabilities (for advanced rendering)
+  =================================================================== -->
+  <!-- Note: Texture support depends on your rendering engine -->
+  <!-- 
+  <material name="textured_metal">
+    <texture filename="package://ctl_description/textures/metal.png"/>
+  </material>
+  
+  <material name="textured_rust">
+    <texture filename="package://ctl_description/textures/rust.png"/>
+  </material>
+  
+  <material name="rubber">
+    <texture filename="package://ctl_description/textures/rubber.png"/>
+  </material>
+  -->
+  
+</robot>

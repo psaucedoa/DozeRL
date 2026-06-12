@@ -1,0 +1,202 @@
+<?xml version="1.0"?>
+<!--
+ File: ctl_tracks.urdf.xacro
+ Purpose: Defines the tracked mobility system for the CTL robot.
+ 
+ This file defines:
+ - Two "track" links (left_track/right_track) fixed to base_link
+ - Seven wheels per side attached to those track links:
+   * Two larger idler wheels (front and rear)
+   * Five smaller bogie wheels in between
+ 
+ The tracks provide a simplified control interface, while the
+ individual wheels provide visual and collision models for simulation.
+ 
+ Usage:
+ <xacro:ctl_tracks
+   prefix=""
+   base_link="base_link"
+ />
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- =========================================================
+    Macro: ctl_tracks
+    
+    Arguments:
+    - prefix: Robot model prefix (default: "")
+    - base_link: Parent link for track attachment (default: "base_footprint")
+    
+    This macro creates the track and wheel components for the CTL robot.
+  ========================================================= -->
+  <xacro:macro name="ctl_tracks" params="
+        prefix:=''
+        base_link:='base_footprint'
+    ">
+    <!-- ===================================================================
+         SECTION 1: PHYSICAL PROPERTIES
+         Dimensions and mechanical properties for tracks/wheels
+    =================================================================== -->
+    
+    <!-- 1.1: Mass and Dimensions -->
+    <xacro:property name="wheel_mass" value="1.0" />
+    <xacro:property name="wheel_len" value="0.4572" /> <!-- 18 * 0.0254 m (18 inches) -->
+    <xacro:property name="wheel_radius" value="0.2032" /> <!-- 8 * 0.0254 m (8 inches) -->
+    <xacro:property name="bogie_wheel_radius" value="0.10" /> <!-- ~4 inches -->
+    <xacro:property name="wheel_edge_gap" value="0.0508" /> <!-- 2 * 0.0254 m (2 inches) -->
+    <xacro:property name="base_width" value="0.889" /> <!-- 35 * 0.0254 m (35 inches) -->
+    <xacro:property name="gap" value="0.1016" /> <!-- 4 * 0.0254 m (4 inches) -->
+
+    <!-- 1.2: Wheel Positions (X-coordinates along length of vehicle) -->
+    <xacro:property name="x_3" value="-.3" /> <!-- Middle wheel reference -->
+    <xacro:property name="x_4" value="${x_3 + bogie_wheel_radius + bogie_wheel_radius + wheel_edge_gap}" />
+    <xacro:property name="x_5" value="${x_4 + bogie_wheel_radius + bogie_wheel_radius + wheel_edge_gap}" />
+    <xacro:property name="x_6" value="${x_5 + bogie_wheel_radius + bogie_wheel_radius + wheel_edge_gap}" />
+    <xacro:property name="x_7" value="${x_6 + bogie_wheel_radius + wheel_radius + wheel_edge_gap}" />
+    <xacro:property name="x_2" value="${x_3 - (bogie_wheel_radius + bogie_wheel_radius + wheel_edge_gap)}" />
+    <xacro:property name="x_1" value="${x_2 - (bogie_wheel_radius + wheel_radius + wheel_edge_gap)}" />
+
+    <!-- 1.3: Track Y-Position (left/right of vehicle centerline) -->
+    <xacro:property name="left_y" value="${base_width/2 + wheel_len/2 + gap}" />
+    <xacro:property name="right_y" value="${-base_width/2 - wheel_len/2 - gap}" />
+
+    <!-- ===================================================================
+         SECTION 2: HELPER MACROS
+         Internal macros to reduce repetition
+    =================================================================== -->
+    
+    <!-- 2.1: Idler Wheel Macro (larger front/rear wheels) -->
+    <xacro:macro name="idler_wheel" params="name parent x_pos y_pos">
+      <link name="${prefix}${name}_link">
+        <collision>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <geometry>
+            <cylinder length="${wheel_len}" radius="${wheel_radius}"/>
+          </geometry>
+        </collision>
+        <visual>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <geometry>
+            <cylinder length="${wheel_len}" radius="${wheel_radius}"/>
+          </geometry>
+          <material name="translucent_black"/>
+        </visual>
+        <inertial>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <mass value="${wheel_mass}"/>
+          <inertia
+            ixx="${(wheel_mass/12) * (3*wheel_radius*wheel_radius + wheel_len*wheel_len)}"
+            ixy="0" ixz="0"
+            iyy="${(wheel_mass/12) * (3*wheel_radius*wheel_radius + wheel_len*wheel_len)}"
+            iyz="0" izz="${(wheel_mass/2) * (wheel_radius*wheel_radius)}"/>
+        </inertial>
+      </link>
+
+      <joint name="${prefix}${name}" type="continuous">
+        <parent link="${prefix}${parent}"/>
+        <child link="${prefix}${name}_link"/>
+        <origin xyz="${x_pos} ${y_pos} ${wheel_radius}" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+      </joint>
+    </xacro:macro>
+    
+    <!-- 2.2: Bogie Wheel Macro (smaller middle wheels) -->
+    <xacro:macro name="bogie_wheel" params="name parent x_pos y_pos">
+      <link name="${prefix}${name}_link">
+        <collision>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <geometry>
+            <cylinder length="${wheel_len}" radius="${bogie_wheel_radius}"/>
+          </geometry>
+        </collision>
+        <visual>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <geometry>
+            <cylinder length="${wheel_len}" radius="${bogie_wheel_radius}"/>
+          </geometry>
+          <material name="translucent_black"/>
+        </visual>
+        <inertial>
+          <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+          <mass value="${wheel_mass}"/>
+          <inertia
+            ixx="${(wheel_mass/12) * (3*bogie_wheel_radius*bogie_wheel_radius + wheel_len*wheel_len)}"
+            ixy="0" ixz="0"
+            iyy="${(wheel_mass/12) * (3*bogie_wheel_radius*bogie_wheel_radius + wheel_len*wheel_len)}"
+            iyz="0" izz="${(wheel_mass/2) * (bogie_wheel_radius*bogie_wheel_radius)}"/>
+        </inertial>
+      </link>
+
+      <joint name="${prefix}${name}_joint" type="continuous">
+        <parent link="${prefix}${parent}"/>
+        <child link="${prefix}${name}_link"/>
+        <origin xyz="${x_pos} ${y_pos} ${bogie_wheel_radius}" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+      </joint>
+    </xacro:macro>
+
+    <!-- ===================================================================
+         SECTION 3: TRACK LINKS
+         Main track links for left and right sides
+    =================================================================== -->
+    
+    <!-- 3.1: Left Track Link -->
+    <link name="${prefix}left_track" />
+    <joint name="${prefix}left_track_joint" type="fixed">
+      <parent link="${prefix}${base_link}"/>
+      <child link="${prefix}left_track"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- 3.2: Right Track Link -->
+    <link name="${prefix}right_track" />
+    <joint name="${prefix}right_track_joint" type="fixed">
+      <parent link="${prefix}${base_link}"/>
+      <child link="${prefix}right_track"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- ===================================================================
+         SECTION 4: LEFT SIDE WHEELS
+         Seven wheels attached to left_track
+    =================================================================== -->
+    
+    <!-- Front idler wheel (larger) -->
+    <xacro:idler_wheel name="idler_wheel_left_front" parent="left_track" x_pos="${x_1}" y_pos="${left_y}" />
+    
+    <!-- Five bogie wheels (smaller) -->
+    <xacro:bogie_wheel name="bogie_wheel_left_1" parent="left_track" x_pos="${x_2}" y_pos="${left_y}" />
+    <xacro:bogie_wheel name="bogie_wheel_left_2" parent="left_track" x_pos="${x_3}" y_pos="${left_y}" />
+
+    <xacro:bogie_wheel name="bogie_wheel_left_3" parent="left_track" x_pos="${x_4}" y_pos="${left_y}" />
+    
+    <xacro:bogie_wheel name="bogie_wheel_left_4" parent="left_track" x_pos="${x_5}" y_pos="${left_y}" />
+    <xacro:bogie_wheel name="bogie_wheel_left_5" parent="left_track" x_pos="${x_6}" y_pos="${left_y}" />
+    
+    <!-- Rear idler wheel (larger) -->
+    <!-- <xacro:idler_wheel name="idler_wheel_left_rear" parent="left_track" x_pos="${x_7}" y_pos="${left_y}" /> -->
+    <xacro:idler_wheel name="track_speed_sensor_left" parent="left_track" x_pos="${x_7}" y_pos="${left_y}" />
+
+    <!-- ===================================================================
+         SECTION 5: RIGHT SIDE WHEELS
+         Seven wheels attached to right_track
+    =================================================================== -->
+    
+    <!-- Front idler wheel (larger) -->
+    <xacro:idler_wheel name="idler_wheel_right_front" parent="right_track" x_pos="${x_1}" y_pos="${right_y}" />
+    
+    <!-- Five bogie wheels (smaller) -->
+    <xacro:bogie_wheel name="bogie_wheel_right_1" parent="right_track" x_pos="${x_2}" y_pos="${right_y}" />
+    <!-- <xacro:bogie_wheel name="bogie_wheel_right_2" parent="right_track" x_pos="${x_2}" y_pos="${right_y}" /> -->
+    <!-- <xacro:bogie_wheel name="bogie_wheel_right_3" parent="right_track" x_pos="${x_4}" y_pos="${right_y}" /> -->
+    <xacro:bogie_wheel name="tracks_rotational" parent="right_track" x_pos="${x_3}" y_pos="${right_y}" />    
+    <xacro:bogie_wheel name="tracks_linear" parent="right_track" x_pos="${x_4}" y_pos="${right_y}" />
+    <xacro:bogie_wheel name="bogie_wheel_right_4" parent="right_track" x_pos="${x_5}" y_pos="${right_y}" />
+    <xacro:bogie_wheel name="bogie_wheel_right_5" parent="right_track" x_pos="${x_6}" y_pos="${right_y}" />
+    
+    <!-- Rear idler wheel (larger) -->
+    <!-- <xacro:idler_wheel name="idler_wheel_right_rear" parent="right_track" x_pos="${x_7}" y_pos="${right_y}" /> -->
+    <xacro:idler_wheel name="track_speed_sensor_right" parent="right_track" x_pos="${x_7}" y_pos="${right_y}" />
+
+  </xacro:macro>
+</robot>
