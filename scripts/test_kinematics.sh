@@ -14,4 +14,4 @@ echo "Running kinematics test..."
 ./tests/test_kinematics
 
 echo "Launching kinematics visualizer in Rerun..."
-python viz/kinematics.py
+python viz/viz.py --mode kinematics

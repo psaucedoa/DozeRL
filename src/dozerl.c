@@ -15,6 +15,22 @@ void demo(const char* checkpoint_path) {
         printf("Error: Could not open out/sim_out.bin for writing.\n");
         return;
     }
+    
+    // Write geometry header once
+    struct {
+        float loader_length, loader_width, loader_height;
+        float blade_height, blade_thickness, blade_width;
+        float track_length, track_width, track_height, track_gauge;
+        float arm_r, pivot_x, pivot_z, arm_y_left, arm_y_right;
+        float blade_pitch_length;
+    } geom = { 
+        2.54f, 0.889f, 1.8669f, 
+        0.76f, 0.05f, 1.85f, 
+        TRACK_LENGTH, TRACK_WIDTH, 0.4064f, TRACK_GAUGE, 
+        3.8f, -2.2f, 1.8987f, -0.5f, 0.5f,
+        0.83019f
+    };
+    fwrite(&geom, sizeof(geom), 1, outfile);
 #endif
 
     Weights* weights = NULL;

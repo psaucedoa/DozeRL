@@ -23,17 +23,17 @@ static int global_episode_count = 0;
 #define MAX_TORQUE_ROLL 15000.0f
 #define MAX_FORCE_LINEAR 100000.0f
 #define MAX_TORQUE_ROTATIONAL 80000.0f
-#define ARM_INERTIA 5000.0f
-#define ARM_MASS 800.0f
-#define PITCH_INERTIA 200.0f
-#define ROLL_INERTIA 200.0f
-#define MACHINE_MASS 18000.0f
-#define MACHINE_INERTIA 25000.0f
+#define ARM_INERTIA 7000.0f
+#define ARM_MASS 490.0f
+#define PITCH_INERTIA 19.0f
+#define ROLL_INERTIA 80.0f
+#define MACHINE_MASS 8570.0f
+#define MACHINE_INERTIA 5071.0f
 
 // Machine Geometry Constants
-#define TRACK_LENGTH 2.5f
-#define TRACK_WIDTH 0.4f
-#define TRACK_GAUGE 1.5f
+#define TRACK_LENGTH 1.7112f
+#define TRACK_WIDTH 0.4572f
+#define TRACK_GAUGE 1.5494f
 
 #define ARM_DAMPING 30000.0f  // Rotational damping on the loader arm
 #define PITCH_DAMPING 50000.0f // Increased to slow down pitch
@@ -43,12 +43,12 @@ static int global_episode_count = 0;
 
 #define HYDRAULIC_STIFFNESS 0.9998f // Increased to simulate extremely hard backdriving
 
-#define ARM_MIN -0.5f  // (rad)
-#define ARM_MAX 0.5f   // (rad)
-#define PITCH_MIN (-30.0f * (PI / 180.0f)) // (rad)
-#define PITCH_MAX (45.0f * (PI / 180.0f))  // (rad)
-#define ROLL_MIN (-20.0f * (PI / 180.0f))  // (rad)
-#define ROLL_MAX (20.0f * (PI / 180.0f))   // (rad)
+#define ARM_MIN -0.1f  // (rad)
+#define ARM_MAX 0.45f   // (rad)
+#define PITCH_MIN -0.436f // (rad)
+#define PITCH_MAX 0.96f  // (rad)
+#define ROLL_MIN -0.175f  // (rad)
+#define ROLL_MAX 0.175f   // (rad)
 
 #define SPATIAL_OBS_SIZE 50
 
@@ -274,7 +274,7 @@ static inline void env_reset(SoilEnv* env) {
     }
 
     // Blade initialization (before goal map to sync width)
-    env->blade.width = 2.2f;
+    env->blade.width = 1.85f;
 
     // 3. Goal Map: Slot and Pile
     // Determine Pile Parameters First
@@ -375,7 +375,7 @@ static inline void env_reset(SoilEnv* env) {
     env->blade.x = start_x - (start_offset - 2.0f) * cos_a;
     env->blade.y = start_y - (start_offset - 2.0f) * sin_a;
     env->blade.z = 0.8f;
-    env->blade.rake_angle = 45.0f * (PI / 180.0f);
+    env->blade.rake_angle = 0;  //45.0f * (PI / 180.0f);
     env->blade.surcharge_Q = 0.0f;
     env->blade.pitch = -0.35f;
     env->blade.roll = 0.0f;
@@ -672,14 +672,16 @@ static inline void update_kinematics(SoilEnv* env) {
     blade->roll = atan2f((sum_z_left - sum_z_right)/num_samples, TRACK_GAUGE);
 
     // Pivot arm kinematics
-    float arm_r = 3.35f;
-    float pivot_x = -1.0f;
-    float pivot_z = 1.5f;
+    float arm_r = 3.8f;
+    float blade_pitch_length = 0.83019f;
+    float pivot_x = -2.2f;
+    float pivot_z = 1.8987f;
 
     // Local coordinates of the blade relative to chassis origin (loader_z is at track ground level)
     float theta = blade->arm_height; // arm_height represents the arm pivot angle (rad)
-    float x_blade_local = pivot_x + arm_r * cosf(theta);
-    float z_blade_local = pivot_z + arm_r * sinf(theta);
+    float pitch_total = theta + blade->blade_pitch_rel; // pitch relative to global
+    float x_blade_local = pivot_x + arm_r * cosf(theta) + blade_pitch_length * cosf(pitch_total);
+    float z_blade_local = pivot_z + arm_r * sinf(theta) + blade_pitch_length * sinf(pitch_total);
 
     // Apply chassis roll rotation
     float cos_r = cosf(blade->roll);

@@ -4,6 +4,7 @@ from scipy.spatial.transform import Rotation as R
 import struct
 import sys
 import os
+import argparse
 
 def get_terrain_color(t):
     stops = np.array([
@@ -29,19 +30,38 @@ def calculate_normals(grid_data, cell_size):
     return (normals / norm).reshape(-1, 3)
 
 def main():
-    rr.init("SoilSim_Eval", spawn=True)
+    parser = argparse.ArgumentParser(description="Visualize DozeRL Simulation")
+    parser.add_argument("--mode", type=str, choices=["eval", "kinematics"], default="eval", help="Visualization mode")
+    args = parser.parse_args()
+
+    rr.init(f"SoilSim_{args.mode.capitalize()}", spawn=True)
     
     header_format = "i22fif"
     header_size = struct.calcsize(header_format)
     
+    bin_filename = "sim_test.bin" if args.mode == "kinematics" else "sim_out.bin"
     try:
-        bin_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "sim_out.bin")
+        bin_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", bin_filename)
         f = open(bin_path, "rb")
     except FileNotFoundError:
         print(f"Error: {bin_path} not found.")
         return
 
-    print("Loading binary simulation data into Rerun...")
+    print(f"Loading binary simulation data into Rerun ({args.mode} mode)...")
+    
+    geom_format = "16f"
+    geom_size = struct.calcsize(geom_format)
+    geom_data = f.read(geom_size)
+    if not geom_data:
+        print("Error: Could not read geometry header.")
+        return
+        
+    geom = struct.unpack(geom_format, geom_data)
+    (loader_length, loader_width, loader_height,
+     blade_height, blade_thickness, blade_width,
+     track_length, track_width, track_height, track_gauge,
+     arm_r, pivot_x, pivot_z, arm_y_left, arm_y_right,
+     blade_pitch_length) = geom
     
     while True:
         header_data = f.read(header_size)
@@ -73,20 +93,21 @@ def main():
         
         rr.set_time("step_index", sequence=step)
         
-        # Log telemetry
-        rr.log("kinematics/effort/linear", rr.Scalars(eff_linear))
-        rr.log("kinematics/effort/rotational", rr.Scalars(eff_rotational))
-        rr.log("kinematics/effort/lift", rr.Scalars(eff_lift))
-        rr.log("kinematics/effort/pitch", rr.Scalars(eff_pitch))
-        rr.log("kinematics/effort/roll", rr.Scalars(eff_roll))
-        rr.log("kinematics/effort/yaw", rr.Scalars(eff_yaw))
+        if args.mode == "eval":
+            # Log telemetry
+            rr.log("kinematics/effort/linear", rr.Scalars(eff_linear))
+            rr.log("kinematics/effort/rotational", rr.Scalars(eff_rotational))
+            rr.log("kinematics/effort/lift", rr.Scalars(eff_lift))
+            rr.log("kinematics/effort/pitch", rr.Scalars(eff_pitch))
+            rr.log("kinematics/effort/roll", rr.Scalars(eff_roll))
+            rr.log("kinematics/effort/yaw", rr.Scalars(eff_yaw))
 
-        rr.log("kinematics/velocity/linear", rr.Scalars(track_v_lin))
-        rr.log("kinematics/velocity/rotational", rr.Scalars(track_v_rot))
-        rr.log("kinematics/velocity/lift", rr.Scalars(vel_arm))
-        rr.log("kinematics/velocity/pitch", rr.Scalars(vel_pitch))
-        rr.log("kinematics/velocity/roll", rr.Scalars(vel_roll))
-        rr.log("kinematics/velocity/yaw", rr.Scalars(vel_yaw))
+            rr.log("kinematics/velocity/linear", rr.Scalars(track_v_lin))
+            rr.log("kinematics/velocity/rotational", rr.Scalars(track_v_rot))
+            rr.log("kinematics/velocity/lift", rr.Scalars(vel_arm))
+            rr.log("kinematics/velocity/pitch", rr.Scalars(vel_pitch))
+            rr.log("kinematics/velocity/roll", rr.Scalars(vel_roll))
+            rr.log("kinematics/velocity/yaw", rr.Scalars(vel_yaw))
 
         rr.log("kinematics/position/lift", rr.Scalars(arm_height))
         rr.log("kinematics/position/pitch", rr.Scalars(blade_pitch_rel))
@@ -139,8 +160,6 @@ def main():
         ))
 
         # Machine Visualization
-        loader_length, loader_width, loader_height = 2.5, 1.8, 2.5
-        blade_height, blade_thickness, blade_width = 1.0, 0.2, 2.2
         rot_chassis = R.from_euler('ZYX', [yaw, -pitch, roll], degrees=False).as_quat()
         
         rr.log("world/machine", rr.Transform3D(translation=[loader_x, loader_y, loader_z], rotation=rr.Quaternion(xyzw=rot_chassis)))
@@ -150,35 +169,46 @@ def main():
             colors=[[200, 200, 200]]
         ))
         
-        track_length, track_width, track_height = 2.5, 0.4, 0.8
-        track_gauge = 1.5
         rr.log("world/machine/tracks", rr.Boxes3D(
             half_sizes=[[track_length/2.0, track_width/2.0, track_height/2.0], [track_length/2.0, track_width/2.0, track_height/2.0]],
             centers=[[0.0, track_gauge/2.0, track_height/2.0], [0.0, -track_gauge/2.0, track_height/2.0]],
             colors=[[60, 60, 60], [60, 60, 60]]
         ))
 
-        arm_r = 3.35
-        pivot_x = -1.0
-        pivot_z = 1.5
-
         theta = arm_height
-        blade_local_x = pivot_x + arm_r * np.cos(theta)
-        z_blade_local = pivot_z + arm_r * np.sin(theta)
+        pitch_joint_x = pivot_x + arm_r * np.cos(theta)
+        pitch_joint_z = pivot_z + arm_r * np.sin(theta)
+        
+        pitch_total = theta + blade_pitch_rel
+        blade_local_x = pitch_joint_x + blade_pitch_length * np.cos(pitch_total)
+        z_blade_local = pitch_joint_z + blade_pitch_length * np.sin(pitch_total)
 
-        arm_y_left = -0.85
-        arm_y_right = 0.85
         rr.log("world/machine/lift_arms", rr.LineStrips3D(
             [
-                [[pivot_x, arm_y_left, pivot_z], [blade_local_x, arm_y_left, z_blade_local]],
-                [[pivot_x, arm_y_right, pivot_z], [blade_local_x, arm_y_right, z_blade_local]]
+                [[pivot_x, arm_y_left, pivot_z], [pitch_joint_x, arm_y_left, pitch_joint_z]],
+                [[pivot_x, arm_y_right, pivot_z], [pitch_joint_x, arm_y_right, pitch_joint_z]]
             ],
             radii=[0.08, 0.08],
             colors=[[150, 150, 150], [150, 150, 150]]
         ))
         
-        base_rake = np.radians(45.0)
+        base_rake = 0 #np.radians(45.0)
         rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -(base_rake + blade_pitch_rel + arm_height), blade_roll_rel], degrees=False).as_quat()
+        
+        blade_center_offset = R.from_quat(rot_blade).apply([0.0, 0.0, blade_height / 2.0])
+        blade_center_x = blade_local_x + blade_center_offset[0]
+        blade_center_y = blade_center_offset[1]
+        blade_center_z = z_blade_local + blade_center_offset[2]
+
+        rr.log("world/machine/pitch_links", rr.LineStrips3D(
+            [
+                [[pitch_joint_x, arm_y_left, pitch_joint_z], [blade_center_x, blade_center_y, blade_center_z]],
+                [[pitch_joint_x, arm_y_right, pitch_joint_z], [blade_center_x, blade_center_y, blade_center_z]]
+            ],
+            radii=[0.06, 0.06],
+            colors=[[180, 180, 180], [180, 180, 180]]
+        ))
+        
         rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, z_blade_local], rotation=rr.Quaternion(xyzw=rot_blade)))
         rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(
             half_sizes=[[blade_thickness/2.0, blade_width/2.0, blade_height/2.0]],
