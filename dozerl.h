@@ -447,10 +447,10 @@ static inline float calculate_max_traction() {
 }
 
 static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_SIZE]) {
-    float w_oc_raw = 1.0f;
-    float w_c_raw = 1.0f;
-    float w_f_raw = 1.0f;
-    float w_h_raw = 0.5f;
+    float w_oc_raw = 1.0f;  // overcut weight
+    float w_c_raw = 1.0f;  // cut weight
+    float w_f_raw = 1.0f;  // fill weight
+    float w_h_raw = 1.0f;  // height goal state weight
 
     float sum_w = w_oc_raw + w_c_raw + w_f_raw + w_h_raw;
     float w_oc = w_oc_raw / sum_w;
