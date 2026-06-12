@@ -175,42 +175,54 @@ def main():
             colors=[[60, 60, 60], [60, 60, 60]]
         ))
 
-        theta = arm_height
-        pitch_joint_x = pivot_x + arm_r * np.cos(theta)
-        pitch_joint_z = pivot_z + arm_r * np.sin(theta)
-        
-        pitch_total = theta + blade_pitch_rel
-        blade_local_x = pitch_joint_x + blade_pitch_length * np.cos(pitch_total)
-        z_blade_local = pitch_joint_z + blade_pitch_length * np.sin(pitch_total)
-
-        rr.log("world/machine/lift_arms", rr.LineStrips3D(
+        # Lift Arm Frame
+        rot_arm = R.from_euler('Y', -arm_height, degrees=False).as_quat()
+        rr.log("world/machine/lift_arm", rr.Transform3D(
+            translation=[pivot_x, 0, pivot_z],
+            rotation=rr.Quaternion(xyzw=rot_arm)
+        ))
+        rr.log("world/machine/lift_arm/mesh", rr.LineStrips3D(
             [
-                [[pivot_x, arm_y_left, pivot_z], [pitch_joint_x, arm_y_left, pitch_joint_z]],
-                [[pivot_x, arm_y_right, pivot_z], [pitch_joint_x, arm_y_right, pitch_joint_z]]
+                [[0, arm_y_left, 0], [arm_r, arm_y_left, 0]],
+                [[0, arm_y_right, 0], [arm_r, arm_y_right, 0]]
             ],
             radii=[0.08, 0.08],
             colors=[[150, 150, 150], [150, 150, 150]]
         ))
-        
-        base_rake = 0 #np.radians(45.0)
-        rot_blade = R.from_euler('ZYX', [blade_yaw_rel, -(base_rake + blade_pitch_rel + arm_height), blade_roll_rel], degrees=False).as_quat()
-        
-        blade_center_offset = R.from_quat(rot_blade).apply([0.0, 0.0, blade_height / 2.0])
-        blade_center_x = blade_local_x + blade_center_offset[0]
-        blade_center_y = blade_center_offset[1]
-        blade_center_z = z_blade_local + blade_center_offset[2]
 
-        rr.log("world/machine/pitch_links", rr.LineStrips3D(
+        # Pitch Link Frame
+        rot_pitch = R.from_euler('Y', -blade_pitch_rel, degrees=False).as_quat()
+        rr.log("world/machine/lift_arm/pitch_link", rr.Transform3D(
+            translation=[arm_r, 0, 0],
+            rotation=rr.Quaternion(xyzw=rot_pitch)
+        ))
+        
+        # Pitch Links (attached from pitch joint to blade center)
+        rr.log("world/machine/lift_arm/pitch_link/mesh", rr.LineStrips3D(
             [
-                [[pitch_joint_x, arm_y_left, pitch_joint_z], [blade_center_x, blade_center_y, blade_center_z]],
-                [[pitch_joint_x, arm_y_right, pitch_joint_z], [blade_center_x, blade_center_y, blade_center_z]]
+                [[0, arm_y_left, 0], [blade_pitch_length, 0, blade_height/2.0]],
+                [[0, arm_y_right, 0], [blade_pitch_length, 0, blade_height/2.0]]
             ],
             radii=[0.06, 0.06],
             colors=[[180, 180, 180], [180, 180, 180]]
         ))
-        
-        rr.log("world/machine/blade_hinge", rr.Transform3D(translation=[blade_local_x, 0, z_blade_local], rotation=rr.Quaternion(xyzw=rot_blade)))
-        rr.log("world/machine/blade_hinge/mesh", rr.Boxes3D(
+
+        # Roll Frame
+        rot_roll = R.from_euler('X', blade_roll_rel, degrees=False).as_quat()
+        rr.log("world/machine/lift_arm/pitch_link/roll_link", rr.Transform3D(
+            translation=[blade_pitch_length, 0, 0],
+            rotation=rr.Quaternion(xyzw=rot_roll)
+        ))
+
+        # Yaw Frame
+        rot_yaw = R.from_euler('Z', blade_yaw_rel, degrees=False).as_quat()
+        rr.log("world/machine/lift_arm/pitch_link/roll_link/yaw_link", rr.Transform3D(
+            translation=[0, 0, 0],
+            rotation=rr.Quaternion(xyzw=rot_yaw)
+        ))
+
+        # Blade Mesh
+        rr.log("world/machine/lift_arm/pitch_link/roll_link/yaw_link/blade", rr.Boxes3D(
             half_sizes=[[blade_thickness/2.0, blade_width/2.0, blade_height/2.0]],
             centers=[[0.0, 0.0, blade_height/2.0]],
             colors=[[255, 50, 50]]

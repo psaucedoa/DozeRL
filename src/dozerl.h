@@ -197,8 +197,8 @@ static inline void env_get_observation(SoilEnv* env, Observation* obs) {
     float sin_y = sinf(blade->yaw);
 
     float half_obs = SPATIAL_OBS_SIZE / 2.0f;
-    float start_grid_x = (blade->x / CELL_SIZE) - half_obs * cos_y + half_obs * sin_y;
-    float start_grid_y = (blade->y / CELL_SIZE) - half_obs * sin_y - half_obs * cos_y;
+    float start_grid_x = (blade->loader_x / CELL_SIZE) - half_obs * cos_y + half_obs * sin_y;
+    float start_grid_y = (blade->loader_y / CELL_SIZE) - half_obs * sin_y - half_obs * cos_y;
 
     for (int i = 0; i < SPATIAL_OBS_SIZE; i++) {
         float row_grid_x = start_grid_x + i * cos_y;
@@ -382,8 +382,8 @@ static inline void env_reset(SoilEnv* env) {
     env->blade.yaw = angle;
     env->blade.v_linear = 0.0f;
     env->blade.v_rotational = 0.0f;
-    env->blade.arm_height = 0.25f; // (rad)
-    env->blade.blade_pitch_rel = 0.0f;
+    env->blade.arm_height = ARM_MIN; // (rad)
+    env->blade.blade_pitch_rel = 0.1f; // pull back slightly to counteract ARM_MIN and make blade vertical
     env->blade.blade_roll_rel = 0.0f;
     env->blade.blade_yaw_rel = 0.0f;
     env->blade.effort_lift = 0.0f;
