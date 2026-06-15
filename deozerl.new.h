@@ -266,15 +266,132 @@ static inline void get_obs(SoilEnv* env)
   }
 }
 
+static inline void precompute_FEE(SoilEnv* env, float alpha)
+{
+  float rho = env->dozer.blade_rake_angle;
+  float beta = (PI / 4.0f) - (ENV_PHI / 2.0f);  // TODO: globalize these params, to be randomized later
+  float eta = ENV_DELTA + rho + ENV_PHI + beta;
+  float sin_eta = sinf(eta);
+  if (fabsf(sin_eta) < 1e-6f) sin_eta = 1e-6f;
+
+  env->N_gamma = ((1.0f / tanf(rho)) + (1.0f / tanf(beta))) * sinf(alpha + ENV_PHI + beta) / (2.0f * sin_eta);
+  env->N_Q = sinf(alpha + ENV_PHI + beta) / sin_eta;
+  env->N_c = cosf(ENV_PHI) / (sinf(beta) * sin_eta);
+  env->N_ca = -cosf(rho + ENV_PHI + beta) / (sinf(rho) * sin_eta);
+}
+
+static inline float calculate_max_traction() {
+    float track_area = 2.0f * TRACK_LENGTH * TRACK_WIDTH;
+    float machine_weight = MACHINE_MASS * GRAVITY;
+    return track_area * ENV_C + machine_weight * tanf(ENV_PHI);
+}
+
 static inline void simulate_step(SoilEnv* env, float dt)
 {
-  // Linear vehicle speed
-  env->dozer.twist_linear_x  = (env->dozer.twist_linear_x + ((env->dozer.effort_linear * MAX_FORCE_LINEAR - env->dozer.last_force) / MACHINE_MASS) * dt) / (1.0f + (LINEAR_DAMPING / MACHINE_MASS) * dt);
+  // Linear track speed
+  env->dozer.vel_tracks_linear = (env->dozer.vel_tracks_linear + ((env->dozer.effort_linear * MAX_FORCE_LINEAR - env->dozer.last_force) / MACHINE_MASS) * dt) / (1.0f + (LINEAR_DAMPING / MACHINE_MASS) * dt);
 
-  // Rotational vehicle speed
+  // net yaw torque
   float mu_lat = 0.6f; 
   float scrub_torque = (mu_lat * MACHINE_MASS * GRAVITY * TRACK_LENGTH) / 4.0f;
   float net_yaw_torque = env->dozer.effort_rotational * MAX_TORQUE_ROTATIONAL + env->dozer.last_yaw_moment;
+
+  // determine yaw torque
+  if (fabsf(env->dozer.vel_tracks_rotational) < 0.05f)
+  {
+    if (fabsf(net_yaw_torque) <= scrub_torque)
+    {
+      net_yaw_torque = 0.0f;
+      env->dozer.vel_tracks_rotational = 0.0f;
+    }
+    else
+    {
+      net_yaw_torque -= (net_yaw_torque > 0 ? scrub_torque : -scrub_torque);
+    }
+  }
+  else
+  {
+    net_yaw_torque -= (env->dozer.vel_tracks_rotational > 0 ? scrub_torque : -scrub_torque);
+  }
+
+  // Rotational Track Speed
+  env->dozer.vel_tracks_rotational = (env->dozer.vel_tracks_rotational + (net_yaw_torque / MACHINE_INERTIA) * dt) / (1.0f + (ROTATIONAL_DAMPING / MACHINE_INERTIA) * dt);
+
+  // Lift arm external torques
+  float LIFT_ARM_CG = 0.5f;
+  float TOTAL_ARM_LEN = ARM_LENGTH + cosf(env->dozer.pos_blade_pitch + 0.5) * PITCH_LENGTH;  // offset by 0.5rad since it's basically inline at ~-0.5rad
+  float arm_gravity_torque = ARM_MASS * GRAVITY * TOTAL_ARM_LEN * LIFT_ARM_CG * cosf(env->dozer.pos_virtual_lift_arm);  // TODO: this should be simplified with total arm inertia
+  float arm_resist_torque = sinf(env->dozer.pos_virtual_lift_arm) * env->dozer.last_force * TOTAL_ARM_LEN;
+  float arm_total_extern_torque = -arm_gravity_torque - arm_resist_torque;
+
+  // why does this check exist?
+  if (env->dozer.effort_lift * arm_total_extern_torque <= 0)
+  {
+    // this gets triggered if effort (+) && extern (-) OR
+    // effort (-) && extern (+)
+    arm_total_extern_torque *= (1.0f - HYDRAULIC_STIFFNESS);
+  }
+
+  // get true arm lift vel & integrate for pos
+  env->dozer.vel_virtual_lift_arm = (env->dozer.vel_virtual_lift_arm + ((env->dozer.effort_lift * MAX_TORQUE_LIFT + arm_total_extern_torque) / ARM_INERTIA) * dt) / (1.0f + (ARM_DAMPING / ARM_INERTIA) * dt);
+  env->dozer.pos_virtual_lift_arm += env->dozer.vel_virtual_lift_arm * dt;
+
+  // check for arm limits
+  float arm_min = env->dozer.pos_virtual_lift_arm_min;
+  float arm_max = env->dozer.pos_virtual_lift_arm_max;
+  if (env->dozer.pos_virtual_lift_arm < arm_min) env->dozer.pos_virtual_lift_arm = arm_min;
+  if (env->dozer.pos_virtual_lift_arm > arm_max) env->dozer.pos_virtual_lift_arm = arm_max;
+
+  // TODO: GLOABLIZE -> float blade_stiffness = 0.98f;
+
+  // Pitch External Torques
+  float PITCH_LINK_CG = 0.75f;
+  float pitch_gravity_torque = PITCH_MASS * GRAVITY * PITCH_LENGTH * PITCH_LINK_CG * cosf(env->dozer.pos_virtual_lift_arm + env->dozer.pos_blade_pitch) * env->dozer.last_force * PITCH_LENGTH;
+  float pitch_resist_torque = sinf(env->dozer.pos_virtual_lift_arm + env->dozer.pos_blade_pitch) * env->dozer.last_force * PITCH_LENGTH;
+  float pitch_total_extern_torque = -pitch_gravity_torque - pitch_resist_torque;
+  if (env->dozer.effort_pitch * pitch_total_extern_torque <= 0)
+  {
+    pitch_total_extern_torque *= (1.0f - PITCH_STIFFNESS);  // TODO: Maybe the same as HYDRAULIC_STIFFNESS
+  }
+
+  // get true pitch joint vel and pos
+  env->dozer.vel_blade_pitch = (env->dozer.vel_blade_pitch + ((env->dozer.effort_pitch * MAX_TORQUE_PITCH + pitch_total_extern_torque) / PITCH_INERTIA) * dt) / (1.0f + (PITCH_DAMPING / PITCH_INERTIA) * dt);
+  env->dozer.pos_blade_pitch += env->dozer.vel_blade_pitch * dt;
+
+  // check limits
+  float PITCH_MIN = env->dozer.pos_blade_pitch_min;
+  float PITCH_MAX = env->dozer.pos_blade_pitch_max;
+  if (env->dozer.pos_blade_pitch < PITCH_MIN) env->dozer.pos_blade_pitch = PITCH_MIN;
+  if (env->dozer.pos_blade_pitch > PITCH_MAX) env->dozer.pos_blade_pitch = PITCH_MAX;
+
+  // roll external torques
+  // TODO: This one's different since the resisting forces are moreso dependent on the pressure exerted
+  // by the soil, resisting penetration by the edges of the blade (when in contact with soil)
+  // Otherwise, it's just internal fricitons of the hydraulics and joint
+
+  // TODO: why the 45 deg here?
+  env->dozer.blade_rake_angle = (45.0f * (PI/180.0f)) + env->dozer.pos_blade_pitch + env->dozer.pos_virtual_lift_arm + env->dozer.angular_y;
+  float ALPHA = 0.0;  // TODO: globalize? Describe this
+  precompute_FEE(env, 0.0f);  // TODO: Is ALPHA a necessary arg here, or is the global param fine?
+
+  // find slip
+  float slip = env->dozer.last_force / calculate_max_traction();  // TODO: We might just be able to calculate this value once, with the assumption that we'll ~always have full track-on-soil contact... which is wrong. So alternatively, calculate contact area?
+  if (slip < 0) slip = 0;
+  if (slip > 1) slip = 1;
+
+  // get updated positions
+  env->dozer.angular_z += env->dozer.vel_tracks_rotational * (1.0f - slip) * dt;
+  env->dozer.position_x += env->dozer.vel_tracks_linear * (1.0f - slip) * cosf(env->dozer.angular_z) * dt;
+  env->dozer.position_y += env->dozer.vel_tracks_linear * (1.0f - slip) * sinf(env->dozer.angular_z) * dt;
+
+  // get updated true velocities (odom)
+  // maybe by adding up the track speeds and accountring for slip?
+  // but then we'd have to keep track of individual track speeds internally
+  // which would require some reqork in earlier sections...
+  env->dozer.twist_linear_x = env->dozer.vel_tracks_linear * (1.0f - slip);
+  env->dozer.twist_angular_z = env->dozer.vel_tracks_rotational * (1.0f - slip);
+
+  update_kinematics(env);  // TODO: should this happen before or after we get updated positions?
 
 }
 

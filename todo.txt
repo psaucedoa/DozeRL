@@ -7,3 +7,8 @@
         - We actually already do this, so physics were at 30hz and soil erosion was at 90hz!
     - Will everything be fine if we do 10Hz control, 10hz physics, 30hz soil erosion?
 [ ] globalize the all-caps vars for randomization
+[ ] make sure coordinate system signedness is correct!
+[ ] make blade_stiffness a global param PITCH_STIFFNESS
+[ ] implement blade roll reactive forces
+[ ] check vehicle odom (twists)
+[ ] check order of update_kinematics in simulate_step code

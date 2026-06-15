@@ -541,9 +541,9 @@ static inline float env_get_reward(SoilEnv* env, float H_minus[GRID_SIZE][GRID_S
     // float jitter_term = -jitter_penalty * 0.01f;
     // reward += jitter_term;
 
-    if (jitter_term < -0.05f) {
-        env->count_jitter += 1.0f;
-    }
+    // if (jitter_term < -0.05f) {
+    //     env->count_jitter += 1.0f;
+    // }
 
     return reward;
 }

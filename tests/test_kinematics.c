@@ -3,7 +3,7 @@
 #include <math.h>
 #include <string.h>
 
-#include "../src/dozerl.h"
+#include "../dozerl.h"
 
 static int global_test_step = 0;
 
