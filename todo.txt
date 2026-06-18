@@ -12,3 +12,4 @@
 [ ] implement blade roll reactive forces
 [ ] check vehicle odom (twists)
 [ ] check order of update_kinematics in simulate_step code
+[ ] max_force_linear/rotational -> max_force_track, then get linear / rotational off that?
