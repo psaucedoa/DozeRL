@@ -634,6 +634,10 @@ static inline void update_kinematics(SoilEnv* env) {
     float tan_phi = tanf(env_phi);
     if (tan_phi < 0.01f) tan_phi = 0.01f;
 
+    // Using Terzaghi's soil bearing capacity theory
+    // Q_u = c * N_c + gamma * D * N_q + 0.5 * gamma * B * N_gamma
+    //                                    ^ this value is because we assume a "strip footing"
+    // Q_u = [cohesion] + [footing depth & overburden pressure] + [footing width & length of shear stress area]
     float N_q_b = expf(PI * tan_phi) * powf(tanf((PI / 4.0f) + (env_phi / 2.0f)), 2.0f);
     float N_c_b = (N_q_b - 1.0f) / tan_phi;
     float N_gamma_b = 2.0f * (N_q_b + 1.0f) * tan_phi;
@@ -641,7 +645,7 @@ static inline void update_kinematics(SoilEnv* env) {
     float q_u = env_c * N_c_b + 0.5f * env_gamma * TRACK_WIDTH * N_gamma_b;
     float ground_pressure = (MACHINE_MASS * GRAVITY) / (2.0f * TRACK_LENGTH * TRACK_WIDTH);
 
-    float compaction_rate = (ground_pressure / q_u) * 0.5f; 
+    float compaction_rate = (ground_pressure / q_u) * 0.5f;
     if (compaction_rate > 0.8f) compaction_rate = 0.8f;
     if (compaction_rate < 0.05f) compaction_rate = 0.05f;
 
@@ -675,12 +679,19 @@ static inline void update_kinematics(SoilEnv* env) {
         }
     }
 
-    float hL = TRACK_LENGTH / 2.0f, hW = TRACK_GAUGE / 2.0f;
-    int num_samples = 11;
-    float sum_z_left = 0, sum_z_right = 0, sum_xz_left = 0, sum_xz_right = 0, sum_x2 = 0;
+    float hL = TRACK_LENGTH / 2.0f;  // halfway track length
+    float hW = TRACK_GAUGE / 2.0f;  // halway track width
+    int num_samples = 11;  // track segments
 
-    for (int i = 0; i < num_samples; i++) {
-        float lx = -hL + (TRACK_LENGTH * i) / (num_samples - 1);
+    float sum_z_left = 0;
+    float sum_z_right = 0;
+    float sum_xz_left = 0;
+    float sum_xz_right = 0;
+    float sum_x2 = 0;
+
+    for (int i = 0; i < num_samples; i++)  // we look at every section vertex
+    {
+        float lx = -hL + (TRACK_LENGTH * i) / (num_samples - 1);  // 
         sum_x2 += lx * lx;
         float p_lx = blade->loader_x + lx * cos_y - hW * sin_y, p_ly = blade->loader_y + lx * sin_y + hW * cos_y;
         float p_rx = blade->loader_x + lx * cos_y + hW * sin_y, p_ry = blade->loader_y + lx * sin_y - hW * cos_y;
