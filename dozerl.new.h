@@ -89,6 +89,8 @@ typedef struct
 
   // Blade Geometry
   float blade_width;        // (m)
+  float blade_height;       // (m)
+  float blade_mount_pitch;  // (rad)
   float blade_rake_angle;   // (rad)
   float blade_surcharge_Q;  // (N)  TODO: CHECK UNITS
   float blade_x;            // (m)
@@ -99,8 +101,11 @@ typedef struct
   float track_width;  // width of individual track
   float track_length; // length of track that makes contact with soil on flat plane
   float track_gauge;  // spacing between track centerpoints
+  float track_contact_area;
 
   // Arm Geometry
+  float arm_pivot_x;
+  float arm_pivot_z;
   float arm_length;
   float pitch_length;
 
@@ -336,24 +341,220 @@ static inline void precompute_soil_bearing_capacity(SoilEnv* env)
   env->soil_q_u = env->soil_c * N_c_b + 0.5 * env->soil_gamma * dozer->track_width * N_gamma_b;
 }
 
+static inline void update_chassis_pose(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  // precalculate trigs and track half-dimensions
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+  float half_track_length = dozer->track_length * 0.5f;
+  float half_track_gauge = dozer->track_gauge * 0.5f;
+
+  int num_samples = 11;
+  float sum_height_left = 0.0f;
+  float sum_height_right = 0.0f;
+  float sum_moment_left = 0.0f;
+  float sum_moment_right = 0.0f;
+  float sum_length_squared = 0.0f;
+
+  for (int i = 0; i < num_samples; i++)
+  {
+    float local_x = -half_track_length + (dozer->track_length * i) / (num_samples - 1);
+    sum_length_squared += local_x * local_x;
+
+    // Left track is at +half_track_gauge in local Y, Right track is at -half_track_gauge in local Y
+    float point_left_x = dozer->position_x + local_x * cos_y - half_track_gauge * sin_y;
+    float point_left_y = dozer->position_y + local_x * sin_y + half_track_gauge * cos_y;
+    float point_right_x = dozer->position_x + local_x * cos_y + half_track_gauge * sin_y;
+    float point_right_y = dozer->position_y + local_x * sin_y - half_track_gauge * cos_y;
+
+    int grid_index_left_x = (int)(point_left_x / CELL_SIZE);
+    int grid_index_left_y = (int)(point_left_y / CELL_SIZE);
+    int grid_index_right_x = (int)(point_right_x / CELL_SIZE);
+    int grid_index_right_y = (int)(point_right_y / CELL_SIZE);
+
+    float soil_height_left = 1.0f;
+    float soil_height_right = 1.0f;
+  
+    if (grid_index_left_x >= 0 && grid_index_left_x < GRID_SIZE && grid_index_left_y >= 0 && grid_index_left_y < GRID_SIZE)
+    {
+      soil_height_left = env->grid_H[grid_index_left_x][grid_index_left_y] + env->grid_L[grid_index_left_x][grid_index_left_y];
+    }
+    if (grid_index_right_x >= 0 && grid_index_right_x < GRID_SIZE && grid_index_right_y >= 0 && grid_index_right_y < GRID_SIZE)
+    {
+      soil_height_right = env->grid_H[grid_index_right_x][grid_index_right_y] + env->grid_L[grid_index_right_x][grid_index_right_y];
+    }
+
+    sum_height_left += soil_height_left;
+    sum_height_right += soil_height_right;
+    sum_moment_left += local_x * soil_height_left;
+    sum_moment_right += local_x * soil_height_right;
+  }
+
+  dozer->position_z = (sum_height_left + sum_height_right) / (2.0f * num_samples);
+  dozer->angular_y = (atan2f(sum_moment_left / sum_length_squared, 1.0f) + atan2f(sum_moment_right / sum_length_squared, 1.0f)) / 2.0f; // Pitch
+  dozer->angular_x = atan2f((sum_height_left - sum_height_right) / num_samples, dozer->track_gauge); // Roll
+}
+
+static inline void forward_kinematics(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  // Local coordinates of the blade joint relative to chassis origin
+  float theta = dozer->pos_virtual_lift_arm;
+  float pitch_total = theta + dozer->pos_blade_pitch;
+  float x_joint_local = dozer->arm_pivot_x + dozer->arm_length * cosf(theta) + dozer->pitch_length * cosf(pitch_total);
+  float z_joint_local = dozer->arm_pivot_z + dozer->arm_length * sinf(theta) + dozer->pitch_length * sinf(pitch_total);
+
+  // Calculate global blade rake angle
+  dozer->blade_rake_angle = dozer->blade_mount_pitch + pitch_total + dozer->angular_y;
+
+  // Calculate bottom edge from joint using local rake angle
+  float local_rake_angle = dozer->blade_mount_pitch + pitch_total;
+  float half_blade_height = dozer->blade_height * 0.5f;
+  float x_edge_local = x_joint_local + half_blade_height * cosf(local_rake_angle);
+  float z_edge_local = z_joint_local - half_blade_height * sinf(local_rake_angle);
+
+  // Apply chassis roll rotation to the edge
+  float cos_r = cosf(dozer->angular_x);
+  float sin_r = sinf(dozer->angular_x);
+  float x1 = x_edge_local;
+  float y1 = -z_edge_local * sin_r;
+  float z1 = z_edge_local * cos_r;
+
+  // Apply chassis pitch rotation (pitch is positive when pitching up)
+  float cos_p = cosf(dozer->angular_y);
+  float sin_p = sinf(dozer->angular_y);
+  float x2 = x1 * cos_p - z1 * sin_p;
+  float y2 = y1;
+  float z2 = x1 * sin_p + z1 * cos_p;
+
+  // Apply chassis yaw rotation
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+  dozer->blade_x = dozer->position_x + x2 * cos_y - y2 * sin_y;
+  dozer->blade_y = dozer->position_y + x2 * sin_y + y2 * cos_y;
+  dozer->blade_z = dozer->position_z + z2;
+}
+
+
 static inline void update_kinematics(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // precalculate trigs
+  // precalculate trigs, track dims, and cell area
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
 
-  // we need to find the z height of the track as a function of position along the track
-  // then we *project* the track to the soil surface
-  // then we check every cell in the covered region
-  // if the cell is equal ot or higher than the z-height of the track at that cell location, it is marked
-  // after we look at all cells, we get the total area of track-ground contact (equivalent to all marked cells), and use this to calculate total ground pressure
-  // we then use this to calculate compaction rate
-  // we then apply this compaction rate to the marked cells
-  // we then find the new position of the vehicle by fitting a plane to the cells underneath the track
-  // we then iterate this process (idk like, 3 times?)
+  float half_track_length = dozer->track_length * 0.5f;
+  float half_track_width = dozer->track_width * 0.5f;
+  float half_track_gauge = dozer->track_gauge * 0.5f;
+  float cell_area = CELL_SIZE * CELL_SIZE;
 
+  // 1. Initial pose update before compaction iterations
+  update_chassis_pose(env);
+
+  for (int iter = 0; iter < 3; iter++)
+  {
+    // 2. Determine Contact Area
+    int margin = (int)((half_track_length + 1.0f) / CELL_SIZE);
+    int center_i = (int)(dozer->position_x / CELL_SIZE);
+    int min_i = clamp_idx(center_i - margin);
+    int max_i = clamp_idx(center_i + margin);
+    int center_j = (int)(dozer->position_y / CELL_SIZE);
+    int min_j = clamp_idx(center_j - margin);
+    int max_j = clamp_idx(center_j + margin);
+
+    float marked_area = 0.0f;
+    float tan_pitch = tanf(dozer->angular_y);
+    float tan_roll = tanf(dozer->angular_x);
+
+    for (int i = min_i; i <= max_i; i++)
+    {
+      for (int j = min_j; j <= max_j; j++)
+      {
+        float dx = (i * CELL_SIZE) - dozer->position_x;
+        float dy = (j * CELL_SIZE) - dozer->position_y;
+        float local_x = dx * cos_y + dy * sin_y;
+        float local_y = -dx * sin_y + dy * cos_y;
+
+        if (fabsf(local_x) <= half_track_length)
+        {
+          if (fabsf(local_y - half_track_gauge) <= half_track_width ||
+              fabsf(local_y + half_track_gauge) <= half_track_width)
+          {
+            // z-height of the track at this local position
+            float track_z = dozer->position_z + local_x * tan_pitch + local_y * tan_roll;
+            float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
+            if (soil_z >= track_z)
+            {
+              marked_area += cell_area;
+            }
+          }
+        }
+      }
+    }
+
+    dozer->track_contact_area = marked_area;
+
+    // 3. Calculate Ground Pressure and Compaction Rate
+    float ground_pressure = 0.0f;
+    float compaction_rate = 0.0f;
+    if (marked_area > 0.01f)
+    {
+      ground_pressure = (dozer->machine_mass * GRAVITY) / marked_area;
+      // Prevent divide-by-zero if soil_q_u is zero or very small
+      if (env->soil_q_u > 0.001f)
+      {
+        compaction_rate = (ground_pressure / env->soil_q_u) * 0.5f;
+        if (compaction_rate > 0.8f) compaction_rate = 0.8f;
+        if (compaction_rate < 0.05f) compaction_rate = 0.05f;
+      }
+    }
+
+    // 4. Apply compaction to marked cells
+    if (compaction_rate > 0.0f)
+    {
+      for (int i = min_i; i <= max_i; i++)
+      {
+        for (int j = min_j; j <= max_j; j++)
+        {
+          if (env->grid_L[i][j] < 0.001f) continue;
+          float dx = (i * CELL_SIZE) - dozer->position_x;
+          float dy = (j * CELL_SIZE) - dozer->position_y;
+          float local_x = dx * cos_y + dy * sin_y;
+          float local_y = -dx * sin_y + dy * cos_y;
+
+          if (fabsf(local_x) <= half_track_length)
+          {
+            if (fabsf(local_y - half_track_gauge) <= half_track_width ||
+                fabsf(local_y + half_track_gauge) <= half_track_width)
+            {
+              float track_z = dozer->position_z + local_x * tan_pitch + local_y * tan_roll;
+              float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
+
+              if (soil_z >= track_z)
+              {
+                float compacted = env->grid_L[i][j] * compaction_rate;
+                env->grid_L[i][j] -= compacted;
+                env->grid_H[i][j] += compacted / env->swell_ratio;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 5. Update vehicle pose at the end of the compaction iteration
+    update_chassis_pose(env);
+  }
+
+  // update global blade coordinates
+  forward_kinematics(env);
+
+  // precompute soil forces based on the updated blade rake angle
+  precompute_FEE(env, 0.0f); // TODO: ALPHA argument is currently 0.0f
 }
 
 static inline void simulate_step(SoilEnv* env, float dt)
@@ -440,10 +641,7 @@ static inline void simulate_step(SoilEnv* env, float dt)
   // by the soil, resisting penetration by the edges of the blade (when in contact with soil)
   // Otherwise, it's just internal fricitons of the hydraulics and joint
 
-  // TODO: why the 45 deg here?
-  dozer->blade_rake_angle = (45.0f * (PI/180.0f)) + dozer->pos_blade_pitch + dozer->pos_virtual_lift_arm + dozer->angular_y;
-  float ALPHA = 0.0;  // TODO: globalize? Describe this
-  precompute_FEE(env, 0.0f);  // TODO: Is ALPHA a necessary arg here, or is the global param fine?
+  // Note: blade_rake_angle and precompute_FEE are now handled in update_kinematics
 
   // find slip
   float slip = dozer->last_force / calculate_max_traction();  // TODO: We might just be able to calculate this value once, with the assumption that we'll ~always have full track-on-soil contact... which is wrong. So alternatively, calculate contact area?
@@ -463,7 +661,6 @@ static inline void simulate_step(SoilEnv* env, float dt)
   dozer->twist_angular_z = dozer->vel_tracks_rotational * (1.0f - slip);
 
   update_kinematics(env);  // TODO: should this happen before or after we get updated positions?
-
 }
 
 static inline void env_reset(SoilEnv* env)
