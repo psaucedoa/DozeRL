@@ -96,8 +96,9 @@ typedef struct
   float blade_z;            // (m)
 
   // Track Geometry
-  float track_width;
-  float track_length;
+  float track_width;  // width of individual track
+  float track_length; // length of track that makes contact with soil on flat plane
+  float track_gauge;  // spacing between track centerpoints
 
   // Arm Geometry
   float arm_length;
@@ -170,11 +171,14 @@ typedef struct
   // soil params (may change episode-to-episode)
   float swell_ratio;         // ( )       Volumetric change when going from compact to loose soil
   float loose_soil_density;  // (kg/m^3 ) Density
-  float soil_c;
-  float soil_c_a;
-  float soil_phi;
+  float soil_c;  // soil cohesion
+  float soil_c_a;  // adhesion
+  float soil_phi;  // soil internal friction angle
   float soil_delta;
-  float soil_gamma;
+  float soil_gamma;  // moist? unit weight of soil
+  float soil_q_u; // soil ultimate bearing capacity | NOTE: Since we're dealing with 'homogenous' soil properties, we can effectively just calculate this once!
+  // 
+
 
   Dozer dozer;
   int step_num;
@@ -305,17 +309,50 @@ static inline float calculate_max_traction(SoilEnv* env)
   return track_area * env->soil_c + machine_weight * tanf(env->soil_phi);
 }
 
-static inline void update_kinematics(SoilEnv* env)
+static inline void precompute_soil_bearing_capacity(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
   // precompute the trig terms for the given step
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
-  float tan_phi = tanf(env->soil_phi);
+  float phi = env->soil_phi;
+  float tan_phi = tanf(phi);
+  float cos_phi = cosf((PI * 0.25f) + (phi * 0.5f));
 
   if (tan_phi < 0.01f) tan_phi = 0.01f;  // set min bound for tan_phi
 
+  // Using Terzaghi's soil bearing capacity theory.
+  // Bearing capacity factors are additionally subscripted with '_b' to distinguish them from the blade FEE factors
+  // Q_u = c * N_c + gamma * D * N_q + 0.5 * gamma * B * N_gamma
+  //                                    ^ this value is because we assume a "strip footing"
+  // Q_u = [cohesion] + [footing depth & overburden pressure] + [footing width & length of shear stress area]
+  float N_q_b = expf( (3.0f * PI * 0.5f * tan_phi) - phi* tan_phi ) / ( 2.0f *  cos_phi * cos_phi);
+  float N_c_b = (N_q_b - 1.0f) / tan_phi;
+  float N_gamma_b = 2.0f * (N_q_b + 1.0f) * tan_phi;
+
+  // given that out 'footing' is at the surface, our foundation depth is 0, and the second term goes to 0, thus
+  // Q_u = [cohesion] + [footing width & length of shear stress area]
+  env->soil_q_u = env->soil_c * N_c_b + 0.5 * env->soil_gamma * dozer->track_width * N_gamma_b;
+}
+
+static inline void update_kinematics(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  // precalculate trigs
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+
+  // we need to find the z height of the track as a function of position along the track
+  // then we *project* the track to the soil surface
+  // then we check every cell in the covered region
+  // if the cell is equal ot or higher than the z-height of the track at that cell location, it is marked
+  // after we look at all cells, we get the total area of track-ground contact (equivalent to all marked cells), and use this to calculate total ground pressure
+  // we then use this to calculate compaction rate
+  // we then apply this compaction rate to the marked cells
+  // we then find the new position of the vehicle by fitting a plane to the cells underneath the track
+  // we then iterate this process (idk like, 3 times?)
 
 }
 
@@ -426,6 +463,20 @@ static inline void simulate_step(SoilEnv* env, float dt)
   dozer->twist_angular_z = dozer->vel_tracks_rotational * (1.0f - slip);
 
   update_kinematics(env);  // TODO: should this happen before or after we get updated positions?
+
+}
+
+static inline void env_reset(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  precompute_soil_bearing_capacity(env);
+}
+
+void c_reset(SoilEnv* env)
+{
+  env->tick = 0;
+  env_reset(env);
 
 }
 
