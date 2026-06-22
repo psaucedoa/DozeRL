@@ -402,26 +402,23 @@ static inline void forward_kinematics(SoilEnv* env)
   Dozer * dozer = &env->dozer;
 
   // Local coordinates of the blade joint relative to chassis origin
-  float theta = dozer->pos_virtual_lift_arm;
-  float pitch_total = theta + dozer->pos_blade_pitch;
-  float x_joint_local = dozer->arm_pivot_x + dozer->arm_length * cosf(theta) + dozer->pitch_length * cosf(pitch_total);
-  float z_joint_local = dozer->arm_pivot_z + dozer->arm_length * sinf(theta) + dozer->pitch_length * sinf(pitch_total);
+  float theta_arm = dozer->pos_virtual_lift_arm;
+  float theta_pitch = dozer->pos_virtual_lift_arm;
+  float theta_rake = dozer->blade_mount_pitch;
 
-  // Calculate global blade rake angle
-  dozer->blade_rake_angle = dozer->blade_mount_pitch + pitch_total + dozer->angular_y;
+  float x_pitch_joint = dozer->arm_pivot_x + dozer->arm_length * cosf(theta_arm);
+  float z_pitch_joint = dozer->arm_pivot_z + dozer->arm_length * sinf(theta_arm);
 
-  // Calculate bottom edge from joint using local rake angle
-  float local_rake_angle = dozer->blade_mount_pitch + pitch_total;
-  float half_blade_height = dozer->blade_height * 0.5f;
-  float x_edge_local = x_joint_local + half_blade_height * cosf(local_rake_angle);
-  float z_edge_local = z_joint_local - half_blade_height * sinf(local_rake_angle);
+  float x_u_joint = x_pitch_joint + dozer->pitch_length * cosf(theta_arm + theta_pitch);
+  float z_u_joint = z_pitch_joint + dozer->pitch_length * sinf(theta_arm + theta_pitch);
+
+  float x_blade_edge = x_u_joint + dozer->blade_height * 0.5 * cosf(theta_arm + theta_pitch + theta_rake);
+  float z_blade_edge = z_u_joint + dozer->pitch_length * 0.5 * sinf(theta_arm + theta_pitch + theta_rake);
 
   // Apply chassis roll rotation to the edge
-  float cos_r = cosf(dozer->angular_x);
-  float sin_r = sinf(dozer->angular_x);
-  float x1 = x_edge_local;
-  float y1 = -z_edge_local * sin_r;
-  float z1 = z_edge_local * cos_r;
+  float x1 = x_blade_edge;
+  float y1 = z_blade_edge * -sinf(dozer->angular_x);
+  float z1 = z_blade_edge * cosf(dozer->angular_x);
 
   // Apply chassis pitch rotation (pitch is positive when pitching up)
   float cos_p = cosf(dozer->angular_y);
