@@ -430,10 +430,15 @@ static inline void forward_kinematics(SoilEnv* env)
   // Apply chassis yaw rotation
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
-  dozer->blade_x = dozer->position_x + x2 * cos_y - y2 * sin_y;
-  dozer->blade_y = dozer->position_y + x2 * sin_y + y2 * cos_y;
-  dozer->blade_z = dozer->position_z + z2;
-}
+  float x3 = x2 * cos_y - y2 * sin_y;
+  float y3 = x2 * sin_y + y2 * cos_y;
+  float z3 = z2;
+
+  // get global blade edge coordinates
+  dozer->blade_x = dozer->position_x + x3;
+  dozer->blade_y = dozer->position_y + y3;
+  dozer->blade_z = dozer->position_z + z3;
+  }
 
 
 static inline void update_kinematics(SoilEnv* env)
@@ -549,14 +554,12 @@ static inline void update_kinematics(SoilEnv* env)
 
   // update global blade coordinates
   forward_kinematics(env);
-
-  // precompute soil forces based on the updated blade rake angle
-  precompute_FEE(env, 0.0f); // TODO: ALPHA argument is currently 0.0f
 }
 
-static inline void simulate_step(SoilEnv* env, float dt)
+static inline void update_joint_vel(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
+
   // Linear track speed
   dozer->vel_tracks_linear = (dozer->vel_tracks_linear + ((dozer->effort_linear * MAX_FORCE_LINEAR - dozer->last_force) / MACHINE_MASS) * dt) / (1.0f + (LINEAR_DAMPING / MACHINE_MASS) * dt);
 
@@ -603,13 +606,6 @@ static inline void simulate_step(SoilEnv* env, float dt)
 
   // get true arm lift vel & integrate for pos
   dozer->vel_virtual_lift_arm = (dozer->vel_virtual_lift_arm + ((dozer->effort_lift * MAX_TORQUE_LIFT + arm_total_extern_torque) / ARM_INERTIA) * dt) / (1.0f + (ARM_DAMPING / ARM_INERTIA) * dt);
-  dozer->pos_virtual_lift_arm += dozer->vel_virtual_lift_arm * dt;
-
-  // check for arm limits
-  float arm_min = dozer->pos_virtual_lift_arm_min;
-  float arm_max = dozer->pos_virtual_lift_arm_max;
-  if (dozer->pos_virtual_lift_arm < arm_min) dozer->pos_virtual_lift_arm = arm_min;
-  if (dozer->pos_virtual_lift_arm > arm_max) dozer->pos_virtual_lift_arm = arm_max;
 
   // TODO: GLOABLIZE -> float blade_stiffness = 0.98f;
 
@@ -625,13 +621,6 @@ static inline void simulate_step(SoilEnv* env, float dt)
 
   // get true pitch joint vel and pos
   dozer->vel_blade_pitch = (dozer->vel_blade_pitch + ((dozer->effort_pitch * MAX_TORQUE_PITCH + pitch_total_extern_torque) / PITCH_INERTIA) * dt) / (1.0f + (PITCH_DAMPING / PITCH_INERTIA) * dt);
-  dozer->pos_blade_pitch += dozer->vel_blade_pitch * dt;
-
-  // check limits
-  float PITCH_MIN = dozer->pos_blade_pitch_min;
-  float PITCH_MAX = dozer->pos_blade_pitch_max;
-  if (dozer->pos_blade_pitch < PITCH_MIN) dozer->pos_blade_pitch = PITCH_MIN;
-  if (dozer->pos_blade_pitch > PITCH_MAX) dozer->pos_blade_pitch = PITCH_MAX;
 
   // roll external torques
   // TODO: This one's different since the resisting forces are moreso dependent on the pressure exerted
@@ -639,6 +628,35 @@ static inline void simulate_step(SoilEnv* env, float dt)
   // Otherwise, it's just internal fricitons of the hydraulics and joint
 
   // Note: blade_rake_angle and precompute_FEE are now handled in update_kinematics
+
+}
+
+static inline void update_joint_pos(SoilEnv* env, float dt)
+{
+  Dozer * dozer = &env->dozer;
+
+  // get pos
+  dozer->pos_virtual_lift_arm += dozer->vel_virtual_lift_arm * dt;
+  // check for arm limits
+  float arm_min = dozer->pos_virtual_lift_arm_min;
+  float arm_max = dozer->pos_virtual_lift_arm_max;
+  if (dozer->pos_virtual_lift_arm < arm_min) dozer->pos_virtual_lift_arm = arm_min;
+  if (dozer->pos_virtual_lift_arm > arm_max) dozer->pos_virtual_lift_arm = arm_max;
+
+  // get pos
+  dozer->pos_blade_pitch += dozer->vel_blade_pitch * dt;
+  // check limits
+  float PITCH_MIN = dozer->pos_blade_pitch_min;
+  float PITCH_MAX = dozer->pos_blade_pitch_max;
+  if (dozer->pos_blade_pitch < PITCH_MIN) dozer->pos_blade_pitch = PITCH_MIN;
+  if (dozer->pos_blade_pitch > PITCH_MAX) dozer->pos_blade_pitch = PITCH_MAX;
+
+  // similarly for roll, but still have to get velocities for that one
+}
+
+static inline void update_chassis_pos(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
 
   // find slip
   float slip = dozer->last_force / calculate_max_traction();  // TODO: We might just be able to calculate this value once, with the assumption that we'll ~always have full track-on-soil contact... which is wrong. So alternatively, calculate contact area?
@@ -656,8 +674,22 @@ static inline void simulate_step(SoilEnv* env, float dt)
   // which would require some reqork in earlier sections...
   dozer->twist_linear_x = dozer->vel_tracks_linear * (1.0f - slip);
   dozer->twist_angular_z = dozer->vel_tracks_rotational * (1.0f - slip);
+}
+
+static inline void simulate_step(SoilEnv* env, float dt)
+{
+  Dozer * dozer = &env->dozer;
+
+  update_joint_vel(env);
+
+  update_joint_pos(env, dt);
+
+  update_chassis_pos(env);
 
   update_kinematics(env);  // TODO: should this happen before or after we get updated positions?
+
+  // precompute soil forces based on the updated blade rake angle
+  precompute_FEE(env, 0.0f); // TODO: ALPHA argument is currently 0.0f
 }
 
 static inline void env_reset(SoilEnv* env)

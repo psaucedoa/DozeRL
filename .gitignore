@@ -1,4 +1,4 @@
 .venv/*
 out/*
 checkpoints/*
-test_kinematics
+tests/test_kinematics
