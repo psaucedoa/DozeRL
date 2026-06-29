@@ -318,8 +318,6 @@ static inline void precompute_soil_bearing_capacity(SoilEnv* env)
   Dozer * dozer = &env->dozer;
 
   // precompute the trig terms for the given step
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
   float phi = env->soil_phi;
   float tan_phi = tanf(phi);
   float cos_phi = cosf((PI * 0.25f) + (phi * 0.5f));
@@ -1004,8 +1002,6 @@ static inline void simulate_step(SoilEnv* env, float dt)
 
 static inline void env_reset(SoilEnv* env)
 {
-  Dozer * dozer = &env->dozer;
-
   precompute_soil_bearing_capacity(env);
 }
 
@@ -1040,5 +1036,8 @@ void c_step(SoilEnv* env)
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
 }
+
+void c_close(SoilEnv* env) {}
+void c_render(SoilEnv* env) {}
 
 #endif
