@@ -127,6 +127,7 @@ typedef struct
   // Dynamics
   float last_force;       // (N) Previous Reaction Force?
   float last_yaw_moment;  // (N*m)
+  float last_roll_moment; // (N*m)
 
   // Actuator Dynamics Constants
   float max_torque_list_arm;
@@ -183,8 +184,6 @@ typedef struct
   float soil_delta;
   float soil_gamma;  // moist? unit weight of soil
   float soil_q_u; // soil ultimate bearing capacity | NOTE: Since we're dealing with 'homogenous' soil properties, we can effectively just calculate this once!
-  // 
-
 
   Dozer dozer;
   int step_num;
@@ -574,52 +573,194 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
 
   float f_net = f_push - f_resist;
 
-  if (fabsf(f_resist) > fabsf(f_hyd_total) && (f_hyd_total * f_resist > 0)) {
-      dozer->twist_linear_x = 0.0f;
-      dozer->vel_tracks_linear = 0.0f; 
-  } else {
-      dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
-      dozer->twist_linear_x *= (1.0f - dozer->track_damping * dt); 
-
-      if (fabsf(f_hyd_total) > f_trac_max) {
-          float max_track_speed = 3.0f; 
-          dozer->vel_tracks_linear = dozer->effort_linear * max_track_speed;
-      } else {
-          dozer->vel_tracks_linear = dozer->twist_linear_x;
-      }
+  // if resistive forces are greater than applied force, stall
+  if (fabsf(f_resist) > fabsf(f_hyd_total) && (f_hyd_total * f_resist > 0))
+  {
+    dozer->twist_linear_x = 0.0f;
+    dozer->vel_tracks_linear = 0.0f; 
   }
-  
+  else
+  {
+    dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
+    dozer->twist_linear_x *= (1.0f - dozer->track_damping * dt); 
+
+    // if our applied force is greater than our available traction
+    if (fabsf(f_hyd_total) > f_trac_max)
+    {
+      float max_track_speed = 3.0f; 
+
+      // we're slipping, so track velocities just depend on commanded effort
+      dozer->vel_tracks_linear = dozer->effort_linear * max_track_speed;
+    }
+    else
+    {
+      // otherwise, track velocities are equal to actual vehicle movement
+      dozer->vel_tracks_linear = dozer->twist_linear_x;
+    }
+  }
+
   dozer->twist_angular_z += ((dozer->effort_rotational * dozer->max_force_rotational) / dozer->machine_inertia) * dt;
   dozer->twist_angular_z *= (1.0f - dozer->track_damping * dt);
 }
 
-static inline void update_chassis_2d_position(SoilEnv* env, float dt) {
+static inline void update_chassis_2d_position(SoilEnv* env, float dt)
+{
   Dozer * dozer = &env->dozer;
   dozer->angular_z += dozer->twist_angular_z * dt;
   dozer->position_x += dozer->twist_linear_x * cosf(dozer->angular_z) * dt;
   dozer->position_y += dozer->twist_linear_x * sinf(dozer->angular_z) * dt;
 }
 
-static inline void interact_with_soil(SoilEnv* env, float dt) {
-  Dozer * dozer = &env->dozer;
-  // Basic soil interaction placeholder. In reality you'd integrate this across blade width.
-  int grid_x = (int)(dozer->blade_x / CELL_SIZE);
-  int grid_y = (int)(dozer->blade_y / CELL_SIZE);
+static inline float calculate_FEE_column(SoilEnv* env, float hard_depth, float total_depth, float width)
+{
+  if (total_depth <= 0.0f) return 0.0f;
+  Dozer* dozer = &env->dozer;
+  float q = dozer->blade_surcharge_Q * (width / dozer->blade_width);
+  float df = q * env->N_Q;
 
-  float soil_height = 0.0f;
-  if (grid_x >= 0 && grid_x < GRID_SIZE && grid_y >= 0 && grid_y < GRID_SIZE) {
-      soil_height = env->grid_H[grid_x][grid_y] + env->grid_L[grid_x][grid_y];
+  if (hard_depth > 0.0f)
+  {
+    df += env->soil_gamma * hard_depth * hard_depth * width * env->N_gamma +
+          env->soil_c * hard_depth * width * env->N_c +
+          env->soil_c_a * hard_depth * width * env->N_ca;
+  }
+  return df;
+}
+
+static inline void interact_with_soil(SoilEnv* env, float dt)
+{
+  Dozer * dozer = &env->dozer;
+
+  float total_force = 0.0f;
+  float total_yaw_moment = 0.0f;
+  float total_roll_moment = 0.0f;
+  float total_vol_cut = 0.0f;
+
+  // precalculate some trigs
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+
+  float total_roll = dozer->angular_x + dozer->pos_blade_roll;
+
+  // Bresenham's Line Algorithm to discretize blade over the grid
+  // 1. Find start and end coordinates of the blade in meters
+  float half_w = dozer->blade_width / 2.0f;
+  float start_m_x = dozer->blade_x - (-half_w) * sin_y; // Left edge
+  float start_m_y = dozer->blade_y + (-half_w) * cos_y;
+  float end_m_x = dozer->blade_x - (half_w) * sin_y;   // Right edge
+  float end_m_y = dozer->blade_y + (half_w) * cos_y;
+
+  // 2. Convert to grid indices
+  int x0 = (int)(start_m_x / CELL_SIZE);
+  int y0 = (int)(start_m_y / CELL_SIZE);
+  int x1 = (int)(end_m_x / CELL_SIZE);
+  int y1 = (int)(end_m_y / CELL_SIZE);
+
+  int dx_i = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+  int dy_i = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+  int sx = (x0 < x1) ? 1 : -1;
+  int sy = (y0 < y1) ? 1 : -1;
+  int err = dx_i - dy_i;
+
+  // Effective width of blade per intersected cell to conserve mass/force geometry.
+  // When diagonal, this properly scales up to CELL_SIZE * sqrt(2) to prevent force loss.
+  float effective_width = CELL_SIZE / fmaxf(fabsf(cos_y), fabsf(sin_y));
+
+  // Arrays to store exactly which cells we visited to deposit cut volume later
+  int visited_x[100];
+  int visited_y[100];
+  int num_cells = 0;
+
+  while (1)
+  {
+    if (x0 >= 0 && x0 < GRID_SIZE && y0 >= 0 && y0 < GRID_SIZE)
+    {
+      if (num_cells < 100)
+      {
+        visited_x[num_cells] = x0;
+        visited_y[num_cells] = y0;
+        num_cells++;
+      }
+
+      // Calculate the moment arm (local_y) and blade elevation at this specific grid cell
+      float cell_m_x = x0 * CELL_SIZE;
+      float cell_m_y = y0 * CELL_SIZE;
+      float dx = cell_m_x - dozer->blade_x;
+      float dy = cell_m_y - dozer->blade_y;
+      float local_y = -dx * sin_y + dy * cos_y;
+
+      float section_blade_z = dozer->blade_z + local_y * sinf(total_roll);
+
+      // 3. Cut the soil (remove from heightmap, convert to loose)
+      float total_h = env->grid_H[x0][y0] + env->grid_L[x0][y0];
+      float depth = total_h - section_blade_z;
+
+      if (depth > 0.0f)
+      {
+        if (env->grid_L[x0][y0] > 0.0f)
+        {
+          float l_cut = (depth < env->grid_L[x0][y0]) ? depth : env->grid_L[x0][y0];
+          env->grid_L[x0][y0] -= l_cut; 
+          depth -= l_cut; 
+          total_vol_cut += l_cut * CELL_SIZE * CELL_SIZE;
+        }
+        if (depth > 0.0f)
+        {
+          env->grid_H[x0][y0] -= depth; 
+          total_vol_cut += depth * CELL_SIZE * CELL_SIZE * env->swell_ratio;
+        }
+      }
+
+      // 4. Calculate FEE force on the unyielding soil 1 cell directly in front
+      float front_x = cell_m_x + CELL_SIZE * cos_y;
+      float front_y = cell_m_y + CELL_SIZE * sin_y;
+      int f_grid_x = (int)(front_x / CELL_SIZE);
+      int f_grid_y = (int)(front_y / CELL_SIZE);
+
+      if (f_grid_x >= 0 && f_grid_x < GRID_SIZE && f_grid_y >= 0 && f_grid_y < GRID_SIZE)
+      {
+        float f_total_h = env->grid_H[f_grid_x][f_grid_y] + env->grid_L[f_grid_x][f_grid_y];
+        float f_total_depth = f_total_h - section_blade_z;
+        float f_hard_depth = env->grid_H[f_grid_x][f_grid_y] - section_blade_z;
+
+        float df = calculate_FEE_column(env, f_hard_depth, f_total_depth, effective_width);
+        total_force += df;
+        total_yaw_moment += df * local_y; 
+        total_roll_moment += df * local_y; 
+      }
+    }
+
+    // Bresenham step
+    if (x0 == x1 && y0 == y1) break;
+    int e2 = 2 * err;
+    if (e2 >= -dy_i) { err -= dy_i; x0 += sx; }
+    if (e2 <= dx_i) { err += dx_i; y0 += sy; }
   }
 
-  float penetration = soil_height - dozer->blade_z;
+  dozer->last_force = total_force;
+  dozer->last_yaw_moment = total_yaw_moment;
+  dozer->last_roll_moment = total_roll_moment;
 
-  if (penetration > 0.0f) {
-      dozer->last_force = penetration * 50000.0f; 
-      float f_normal = penetration * 100000.0f; 
-      dozer->last_yaw_moment = f_normal * 0.1f * sinf(dozer->pos_blade_roll); 
-  } else {
-      dozer->last_force = 0.0f;
-      dozer->last_yaw_moment = 0.0f;
+  // 5. Add the cut volume to the loose soil layer directly in front of the visited cells
+  if (total_vol_cut > 0.0f && num_cells > 0)
+  {
+    float dh = (total_vol_cut / num_cells) / (CELL_SIZE * CELL_SIZE);
+    for (int s = 0; s < num_cells; s++)
+    {
+      int cx = visited_x[s];
+      int cy = visited_y[s];
+
+      // Push dirt forward 1 cell length in the direction of travel
+      float dep_global_x = cx * CELL_SIZE + CELL_SIZE * cos_y;
+      float dep_global_y = cy * CELL_SIZE + CELL_SIZE * sin_y;
+
+      int dep_x = (int)(dep_global_x / CELL_SIZE);
+      int dep_y = (int)(dep_global_y / CELL_SIZE);
+      if (dep_x >= 0 && dep_x < GRID_SIZE && dep_y >= 0 && dep_y < GRID_SIZE)
+      {
+        env->grid_L[dep_x][dep_y] += dh;
+      }
+    }
   }
 }
 
@@ -651,7 +792,7 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
 
   dozer->vel_blade_pitch = (dozer->vel_blade_pitch + ((dozer->effort_pitch * dozer->max_torque_pitch + pitch_total_extern_torque) / dozer->pitch_intertia) * dt) / (1.0f + (dozer->blade_pitch_damping / dozer->pitch_intertia) * dt);
 
-  float roll_resist_torque = dozer->last_yaw_moment; 
+  float roll_resist_torque = dozer->last_roll_moment; 
   float roll_total_extern_torque = -roll_resist_torque;
   if (dozer->effort_roll * roll_total_extern_torque <= 0)
   {
@@ -778,6 +919,57 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
   }
 }
 
+static inline void update_surcharge(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  // Create a local bounding box to search for loose soil (1.5m forward, plus width of blade)
+  float search_radius = 2.0f; // rough max extent
+  int center_i = (int)(dozer->blade_x / CELL_SIZE);
+  int center_j = (int)(dozer->blade_y / CELL_SIZE);
+  int margin = (int)(search_radius / CELL_SIZE) + 1;
+
+  int min_i = clamp_idx(center_i - margin);
+  int max_i = clamp_idx(center_i + margin);
+  int min_j = clamp_idx(center_j - margin);
+  int max_j = clamp_idx(center_j + margin);
+
+  float current_surcharge_vol = 0.0f;
+
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+  float half_width = dozer->blade_width / 2.0f;
+  float lookahead = 1.5f;
+  float cell_area = CELL_SIZE * CELL_SIZE;
+
+  for (int i = min_i; i <= max_i; i++)
+  {
+    for (int j = min_j; j <= max_j; j++)
+    {
+      if (env->grid_L[i][j] <= 0.0f) continue;
+
+      float cell_x = i * CELL_SIZE;
+      float cell_y = j * CELL_SIZE;
+
+      float dx = cell_x - dozer->blade_x;
+      float dy = cell_y - dozer->blade_y;
+
+      // Transform cell coordinates into the blade's local frame
+      float local_x = dx * cos_y + dy * sin_y;
+      float local_y = -dx * sin_y + dy * cos_y;
+
+      // Check if the cell is inside the 1.5m box directly in front of the blade
+      if (local_x >= 0.0f && local_x <= lookahead && fabsf(local_y) <= half_width)
+      {
+        current_surcharge_vol += env->grid_L[i][j] * cell_area;
+      }
+    }
+  }
+
+  // Calculate weight of the soil (Volume * Density * Gravity)
+  dozer->blade_surcharge_Q = current_surcharge_vol * env->loose_soil_density * GRAVITY;
+}
+
 static inline void simulate_step(SoilEnv* env, float dt)
 {
   // 1. Calculate Track Forces, Slip, and update Chassis 2D Velocity (X, Y, Yaw)
@@ -802,8 +994,13 @@ static inline void simulate_step(SoilEnv* env, float dt)
   // 7. Simulate Soil Erosion (Slumping)
   simulate_erosion(env, dt, 3);
 
+  // 8. Update Blade Surcharge
+  update_surcharge(env);
+
   // precompute soil forces based on the updated blade rake angle
   precompute_FEE(env, 0.0f); // TODO: ALPHA argument is currently 0.0f
+
+  env->step_num++;
 }
 
 static inline void env_reset(SoilEnv* env)

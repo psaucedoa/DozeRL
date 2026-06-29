@@ -21,6 +21,7 @@ The dimensionless factors $N$ are precomputed in `precompute_FEE` based on the b
 ## 2. Terrain Mapping & Soil Displacement - IMPLEMENTED
 The simulation uses a Heightmap $M$, storing elevation $H$ and loose soil $L$. 
 *   **Cut:** When the blade intersects terrain, height is removed.
+*   **Blade Discretization:** The blade is discretized over the grid using Bresenham's Line Algorithm. This prevents double-counting of cells and accurately calculates effective blade width when pushing diagonally (scaling up to $CELL\_SIZE \cdot \sqrt{2}$).
 *   **Swell:** Cut volume is converted to loose soil using `SWELL_RATIO` ($\approx 1.2$).
 *   **Compaction:** Tracks compress loose soil back into a compacted state. The rate of compaction is dynamically calculated based on the ratio of the machine's ground pressure to the soil's ultimate bearing capacity $q_u$ (using Terzaghi's equation). Compaction is applied strictly to cells falling within the physical 2D rectangular footprint of the left and right tracks.
 *   **Surcharge:** $Q$ is dynamically tracked by calculating the weight of loose soil in a 1.5m window in front of the blade.
