@@ -638,6 +638,7 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   float sin_y = sinf(dozer->angular_z);
 
   float total_roll = dozer->angular_x + dozer->pos_blade_roll;
+  float sin_total_roll = sinf(total_roll);
 
   // Bresenham's Line Algorithm to discretize blade over the grid
   // 1. Find start and end coordinates of the blade in meters
@@ -686,7 +687,7 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       float dy = cell_m_y - dozer->blade_y;
       float local_y = -dx * sin_y + dy * cos_y;
 
-      float section_blade_z = dozer->blade_z + local_y * sinf(total_roll);
+      float section_blade_z = dozer->blade_z + local_y * sin_total_roll;
 
       // 3. Cut the soil (remove from heightmap, convert to loose)
       float total_h = env->grid_H[x0][y0] + env->grid_L[x0][y0];
@@ -831,9 +832,12 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
 
+  float temp_L[GRID_SIZE][GRID_SIZE];  // hoisted outside loop to prevent repeated stack allocations
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+
   for (int iter = 0; iter < num_loops; iter++)  // loop 3 times
   {
-    float temp_L[GRID_SIZE][GRID_SIZE];  // get temp loose soil grid (TODO: lots of memory allocation... maybe reserve this earlier)
     for (int i = min_i; i <= max_i; i++)  // copy over values within out buffered area
     {
       for (int j = min_j; j <= max_j; j++)
@@ -861,8 +865,8 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
 
           float dx_cell = cell_x - dozer->blade_x;
           float dy_cell = cell_y - dozer->blade_y;
-          float local_x = dx_cell * cosf(dozer->angular_z) + dy_cell * sinf(dozer->angular_z);  // get the surrounding pixel in local coords
-          float local_y = -dx_cell * sinf(dozer->angular_z) + dy_cell * cosf(dozer->angular_z);
+          float local_x = dx_cell * cos_y + dy_cell * sin_y;  // get the surrounding pixel in local coords
+          float local_y = -dx_cell * sin_y + dy_cell * cos_y;
 
           if (fabsf(local_y) <= dozer->blade_width / 2.0f)  // if this pixel is under the vehicle, don't bother
           {
