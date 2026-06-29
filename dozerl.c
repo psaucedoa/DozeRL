@@ -1,5 +1,8 @@
 #include "dozerl.h"
 #include "puffernet.h"
+#include "raylib_render.h"
+#include <stdio.h>
+#include <time.h>
 
 void demo(const char* checkpoint_path) {
     SoilEnv* env = (SoilEnv*)malloc(sizeof(SoilEnv));
@@ -7,31 +10,31 @@ void demo(const char* checkpoint_path) {
     env->actions = (float*)calloc(6, sizeof(float));
     env->rewards = (float*)calloc(1, sizeof(float));
     env->terminals = (float*)calloc(1, sizeof(float));
-    env->rng = 42; // fixed seed for deterministic testing
+    env->rng = 42; 
 
-#ifndef BENCHMARK
-    outfile = fopen("out/sim_out.bin", "wb");
-    if (!outfile) {
-        printf("Error: Could not open out/sim_out.bin for writing.\n");
-        return;
-    }
+    // Setup initial properties
+    env->loose_soil_density = 1200.0f;
+    env->soil_gamma = 15000.0f;
+    env->soil_c = 10000.0f;
+    env->soil_phi = 30.0f * M_PI / 180.0f;
+    env->swell_ratio = 1.2f;
     
-    // Write geometry header once
-    struct {
-        float loader_length, loader_width, loader_height;
-        float blade_height, blade_thickness, blade_width;
-        float track_length, track_width, track_height, track_gauge;
-        float arm_r, pivot_x, pivot_z, arm_y_left, arm_y_right;
-        float blade_pitch_length;
-    } geom = { 
-        2.54f, 0.889f, 1.8669f, 
-        0.76f, 0.05f, 1.85f, 
-        TRACK_LENGTH, TRACK_WIDTH, 0.4064f, TRACK_GAUGE, 
-        3.8f, -2.2f, 1.8987f, -0.5f, 0.5f,
-        0.83019f
-    };
-    fwrite(&geom, sizeof(geom), 1, outfile);
-#endif
+    env->dozer.track_length = 2.0f;
+    env->dozer.track_width = 2.0f;
+    env->dozer.blade_width = 2.2f;
+    env->dozer.blade_height = 0.8f;
+    
+    for(int i = 0; i < GRID_SIZE; i++) {
+        for(int j = 0; j < GRID_SIZE; j++) {
+            env->grid_H[i][j] = 1.0f; 
+        }
+    }
+
+    c_reset(env);
+    
+    env->dozer.position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
+    env->dozer.position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
+    env->dozer.position_z = 1.0f;
 
     Weights* weights = NULL;
     PufferNet* net = NULL;
@@ -39,74 +42,58 @@ void demo(const char* checkpoint_path) {
     if (checkpoint_path != NULL) {
         printf("Loading trained policy weights from %s...\n", checkpoint_path);
         weights = load_weights(checkpoint_path);
-        if (weights == NULL) {
-            printf("Error: Failed to load weights from %s.\n", checkpoint_path);
-            return;
+        if (weights != NULL) {
+            int logit_sizes[6] = {1, 1, 1, 1, 1, 1};
+            net = make_puffernet(weights, 1, 5011, 128, 2, logit_sizes, 6);
+            printf("PufferNet policy successfully initialized in C.\n");
         }
-        int logit_sizes[6] = {1, 1, 1, 1, 1, 1};
-        net = make_puffernet(weights, 1, 5011, 128, 2, logit_sizes, 6);
-        printf("PufferNet policy successfully initialized in C.\n");
     } else {
-        printf("No checkpoint path provided. Running manual heuristic policy...\n");
+        printf("No checkpoint path provided. Running interactive Raylib demo...\n");
     }
 
-    c_reset(env);
+    init_render();
 
-#ifdef BENCHMARK
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    int steps = 1000;
-    for (int t = 0; t < steps; t++) {
+    while (!WindowShouldClose()) {
         if (net != NULL) {
-            forward_puffernet(net, env->observations, env->actions);
-        }
-        c_step(env);
-    }
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    double elapsed = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
-    printf("Benchmarking DozeRL Sim via c_step: %d steps in %.4f seconds (%.2f Hz)\n", steps, elapsed, steps / elapsed);
-#else
-    printf("Starting 6DOF 3D Soil Simulation...\n");
-    for (int t = 0; t < 600; t++) {
-        if (net != NULL) {
-            // Forward pass through the trained policy
             forward_puffernet(net, env->observations, env->actions);
         } else {
-            // Reset/zero actions and run manual heuristic control
-            for (int i = 0; i < 6; i++) {
-                env->actions[i] = 0.0f;
-            }
-
-            if (t < 10) {
-                env->actions[0] = 0.8f;  // effort_linear
-                env->actions[3] = 0.5f;  // effort_pitch
-            }
-            if (t < 10) {
-                env->actions[3] = 0.0f;
-                env->actions[2] = -0.06f; // effort_lift
-            }
-            if (t >= 10) {
-                env->actions[0] = 0.8f;  // effort_linear
-                env->actions[2] = 0.0f;
-            }
-            if (t > 400) {
-                env->actions[2] = 0.5f;  // effort_lift
+            if (IsGamepadAvailable(0)) {
+                float left_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y); 
+                env->actions[0] = -left_y; 
+                
+                float left_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X); 
+                env->actions[1] = left_x; 
+                
+                float right_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_Y);
+                env->actions[2] = -right_y; 
+                
+                float right_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_X);
+                env->actions[3] = right_x; 
+                
+                float lt = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_TRIGGER); 
+                float rt = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_TRIGGER); 
+                float lt_val = (lt + 1.0f) / 2.0f;
+                float rt_val = (rt + 1.0f) / 2.0f;
+                env->actions[4] = rt_val - lt_val; 
+            } else {
+                env->actions[0] = 0; env->actions[1] = 0; env->actions[2] = 0; env->actions[3] = 0; env->actions[4] = 0;
+                if (IsKeyDown(KEY_W)) env->actions[0] = 1.0f;
+                if (IsKeyDown(KEY_S)) env->actions[0] = -1.0f;
+                if (IsKeyDown(KEY_A)) env->actions[1] = -1.0f;
+                if (IsKeyDown(KEY_D)) env->actions[1] = 1.0f;
+                if (IsKeyDown(KEY_UP)) env->actions[2] = 1.0f;
+                if (IsKeyDown(KEY_DOWN)) env->actions[2] = -1.0f;
             }
         }
+        
         c_step(env);
+        render_step(env);
     }
-    if (outfile) {
-        fclose(outfile);
-    }
-    printf("Simulation Complete. Data written to out/sim_out.bin.\n");
-#endif
+    
+    close_render();
 
-    if (net != NULL) {
-        free_puffernet(net);
-    }
-    if (weights != NULL) {
-        free(weights);
-    }
+    if (net != NULL) free_puffernet(net);
+    if (weights != NULL) free(weights);
 
     free(env->observations);
     free(env->actions);
