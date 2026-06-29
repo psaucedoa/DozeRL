@@ -12,29 +12,7 @@ void demo(const char* checkpoint_path) {
     env->terminals = (float*)calloc(1, sizeof(float));
     env->rng = 42; 
 
-    // Setup initial properties
-    env->loose_soil_density = 1200.0f;
-    env->soil_gamma = 15000.0f;
-    env->soil_c = 10000.0f;
-    env->soil_phi = 30.0f * M_PI / 180.0f;
-    env->swell_ratio = 1.2f;
-    
-    env->dozer.track_length = 2.0f;
-    env->dozer.track_width = 2.0f;
-    env->dozer.blade_width = 2.2f;
-    env->dozer.blade_height = 0.8f;
-    
-    for(int i = 0; i < GRID_SIZE; i++) {
-        for(int j = 0; j < GRID_SIZE; j++) {
-            env->grid_H[i][j] = 1.0f; 
-        }
-    }
-
     c_reset(env);
-    
-    env->dozer.position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
-    env->dozer.position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
-    env->dozer.position_z = 1.0f;
 
     Weights* weights = NULL;
     PufferNet* net = NULL;

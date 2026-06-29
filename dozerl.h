@@ -1006,6 +1006,47 @@ static inline void simulate_step(SoilEnv* env, float dt)
 
 static inline void env_reset(SoilEnv* env)
 {
+  env->loose_soil_density = 1200.0f;
+  env->soil_gamma = 15000.0f;
+  env->soil_c = 10000.0f;
+  env->soil_phi = 30.0f * M_PI / 180.0f;
+  env->soil_delta = 10.0f * M_PI / 180.0f;
+  env->swell_ratio = 1.2f;
+
+  Dozer* dozer = &env->dozer;
+  dozer->machine_mass = 15000.0f;
+  dozer->machine_inertia = 50000.0f;
+  dozer->track_length = 2.0f;
+  dozer->track_width = 2.0f;
+  dozer->track_gauge = 1.8f;
+  dozer->blade_width = 2.2f;
+  dozer->blade_height = 0.8f;
+  dozer->blade_rake_angle = 30.0f * M_PI / 180.0f;
+  dozer->max_force_linear = 100000.0f;
+  dozer->max_force_rotational = 50000.0f;
+  dozer->max_torque_pitch = 10000.0f;
+  dozer->max_torque_roll = 10000.0f;
+  dozer->pitch_mass = 500.0f;
+  dozer->roll_inertia = 2000.0f;
+  dozer->pitch_intertia = 2000.0f;
+  dozer->track_damping = 5.0f;
+  dozer->hydraulic_stiffness = 0.5f;
+  dozer->blade_pitch_damping = 5.0f;
+  dozer->blade_roll_damping = 5.0f;
+  dozer->pos_virtual_lift_arm_min = -0.5f;
+  dozer->pos_virtual_lift_arm_max = 0.5f;
+
+  dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
+  dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
+  dozer->position_z = 1.0f;
+
+  for(int i = 0; i < GRID_SIZE; i++) {
+    for(int j = 0; j < GRID_SIZE; j++) {
+      env->grid_H[i][j] = 1.0f; 
+      env->grid_L[i][j] = 0.0f; 
+    }
+  }
+
   precompute_soil_bearing_capacity(env);
 }
 
@@ -1041,7 +1082,24 @@ void c_step(SoilEnv* env)
   get_obs(env);
 }
 
-void c_close(SoilEnv* env) {}
-void c_render(SoilEnv* env) {}
+#include "raylib_render.h"
+
+void c_close(SoilEnv* env) {
+    if (IsWindowReady()) {
+        close_render();
+    }
+}
+
+void c_render(SoilEnv* env) {
+    if (!IsWindowReady()) {
+        init_render();
+    }
+    
+    if (IsKeyDown(KEY_ESCAPE)) {
+        exit(0);
+    }
+    
+    render_step(env);
+}
 
 #endif
