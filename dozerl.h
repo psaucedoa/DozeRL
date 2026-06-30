@@ -1092,11 +1092,7 @@ void c_step(SoilEnv* env)
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
 
-  // run the sim given inputs in substeps for physics stability (100Hz instead of 10Hz)
-  for (int i = 0; i < 10; i++)
-  {
-    simulate_step(env, 0.01f);
-  }
+  simulate_step(env, 0.1f);
 
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
