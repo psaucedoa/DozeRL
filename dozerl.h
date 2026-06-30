@@ -568,20 +568,24 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   float f_push = fminf(fabsf(f_hyd_total), f_trac_max);
   if (f_hyd_total < 0) f_push = -f_push;
 
-  float f_net = f_push - f_resist;
+  float f_net = f_push;
 
-  // if resistive forces are greater than applied force, stall
-  if (fabsf(f_resist) > fabsf(f_hyd_total) && (f_hyd_total * f_resist > 0))
-  {
-    dozer->twist_linear_x = 0.0f;
-    dozer->vel_tracks_linear = 0.0f; 
+  // Passive soil resistance only opposes forward motion/effort. It cannot push the dozer backward.
+  if (f_push >= 0.0f) {
+      if (f_resist > f_push) {
+          f_net = 0.0f; // Stall
+          if (dozer->twist_linear_x > 0.0f) {
+              dozer->twist_linear_x = 0.0f;
+          }
+      } else {
+          f_net = f_push - f_resist;
+      }
   }
-  else
-  {
-    dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
-    dozer->twist_linear_x *= (1.0f - dozer->track_damping * dt); 
 
-    // if our applied force is greater than our available traction
+  dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
+  dozer->twist_linear_x *= (1.0f - dozer->track_damping * dt); 
+
+  // if our applied force is greater than our available traction
     if (fabsf(f_hyd_total) > f_trac_max)
     {
       float max_track_speed = 3.0f; 
@@ -594,7 +598,6 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
       // otherwise, track velocities are equal to actual vehicle movement
       dozer->vel_tracks_linear = dozer->twist_linear_x;
     }
-  }
 
   dozer->twist_angular_z += ((dozer->effort_rotational * dozer->max_force_rotational) / dozer->machine_inertia) * dt;
   dozer->twist_angular_z *= (1.0f - dozer->track_damping * dt);
@@ -1008,33 +1011,47 @@ static inline void env_reset(SoilEnv* env)
 {
   env->loose_soil_density = 1200.0f;
   env->soil_gamma = 15000.0f;
-  env->soil_c = 10000.0f;
+  env->soil_c = 0.0f; // 0 cohesion for dry sand to allow proper slumping
   env->soil_phi = 30.0f * M_PI / 180.0f;
   env->soil_delta = 10.0f * M_PI / 180.0f;
   env->swell_ratio = 1.2f;
 
   Dozer* dozer = &env->dozer;
-  dozer->machine_mass = 15000.0f;
-  dozer->machine_inertia = 50000.0f;
-  dozer->track_length = 2.0f;
-  dozer->track_width = 2.0f;
-  dozer->track_gauge = 1.8f;
-  dozer->blade_width = 2.2f;
-  dozer->blade_height = 0.8f;
+  dozer->machine_mass = 8570.0f;
+  dozer->machine_inertia = 5071.0f;
+  dozer->track_length = 1.7112f;
+  dozer->track_width = 0.4572f; 
+  dozer->track_gauge = 1.5494f;
+  dozer->blade_width = 1.85f;
+  dozer->blade_height = 0.76f;
   dozer->blade_rake_angle = 30.0f * M_PI / 180.0f;
   dozer->max_force_linear = 100000.0f;
-  dozer->max_force_rotational = 50000.0f;
-  dozer->max_torque_pitch = 10000.0f;
-  dozer->max_torque_roll = 10000.0f;
-  dozer->pitch_mass = 500.0f;
-  dozer->roll_inertia = 2000.0f;
-  dozer->pitch_intertia = 2000.0f;
-  dozer->track_damping = 5.0f;
-  dozer->hydraulic_stiffness = 0.5f;
-  dozer->blade_pitch_damping = 5.0f;
-  dozer->blade_roll_damping = 5.0f;
+  dozer->max_force_rotational = 80000.0f;
+  dozer->max_torque_pitch = 15000.0f;
+  dozer->max_torque_roll = 15000.0f;
+  dozer->max_torque_list_arm = 100000.0f;
+  dozer->arm_mass = 490.0f;
+  dozer->pitch_mass = 100.0f;
+  dozer->arm_inertia = 7000.0f;
+  dozer->roll_inertia = 80.0f;
+  dozer->pitch_intertia = 19.0f;
+  dozer->track_damping = 3.5f; // (30000 / 8570)
+  dozer->hydraulic_stiffness = 0.9998f;
+  dozer->virtual_lift_arm_damping = 30000.0f;
+  dozer->blade_pitch_damping = 50000.0f;
+  dozer->blade_roll_damping = 50000.0f;
   dozer->pos_virtual_lift_arm_min = -0.5f;
   dozer->pos_virtual_lift_arm_max = 0.5f;
+  dozer->pos_blade_pitch_min = -0.5f;
+  dozer->pos_blade_pitch_max = 0.5f;
+  dozer->pos_blade_roll_min = -0.5f;
+  dozer->pos_blade_roll_max = 0.5f;
+  
+  dozer->arm_length = 3.8f;
+  dozer->arm_pivot_x = -2.2f;
+  dozer->arm_pivot_z = 1.8987f;
+  dozer->pitch_length = 0.83f;
+  dozer->blade_mount_pitch = 0.0f;
 
   dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
@@ -1053,8 +1070,8 @@ static inline void env_reset(SoilEnv* env)
 void c_reset(SoilEnv* env)
 {
   env->tick = 0;
+  memset(&env->dozer, 0, sizeof(Dozer));
   env_reset(env);
-
 }
 
 // Required function
@@ -1075,8 +1092,11 @@ void c_step(SoilEnv* env)
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
 
-  // run the sim given inputs
-  simulate_step(env, 0.1);
+  // run the sim given inputs in substeps for physics stability (100Hz instead of 10Hz)
+  for (int i = 0; i < 10; i++)
+  {
+    simulate_step(env, 0.01f);
+  }
 
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
@@ -1084,22 +1104,27 @@ void c_step(SoilEnv* env)
 
 #include "raylib_render.h"
 
-void c_close(SoilEnv* env) {
-    if (IsWindowReady()) {
-        close_render();
-    }
+void c_render(SoilEnv* env)
+{
+  if (!IsWindowReady())
+  {
+    init_render();
+  }
+
+  if (IsKeyDown(KEY_ESCAPE))
+  {
+    exit(0);
+  }
+
+  render_step(env);
 }
 
-void c_render(SoilEnv* env) {
-    if (!IsWindowReady()) {
-        init_render();
-    }
-    
-    if (IsKeyDown(KEY_ESCAPE)) {
-        exit(0);
-    }
-    
-    render_step(env);
+void c_close(SoilEnv* env)
+{
+  if (IsWindowReady())
+  {
+    close_render();
+  }
 }
 
 #endif
