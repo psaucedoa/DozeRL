@@ -19,13 +19,34 @@ static inline void init_render()
   camera.projection = CAMERA_PERSPECTIVE;
 }
 
+static inline void set_hard_soil_color(float h)
+{
+  float t = h / 2.0f;
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+  unsigned char r = (unsigned char)(130.0f + t * (205.0f - 130.0f));
+  unsigned char g = (unsigned char)(85.0f + t * (150.0f - 85.0f));
+  unsigned char b = (unsigned char)(45.0f + t * (95.0f - 45.0f));
+  rlColor4ub(r, g, b, 255);
+}
+
+static inline void set_loose_soil_color(float h)
+{
+  float t = h / 2.0f;
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+  unsigned char r = (unsigned char)(70.0f + t * (130.0f - 70.0f));
+  unsigned char g = (unsigned char)(40.0f + t * (85.0f - 40.0f));
+  unsigned char b = (unsigned char)(20.0f + t * (50.0f - 20.0f));
+  rlColor4ub(r, g, b, 255);
+}
+
 static inline void draw_heightmap_fast(SoilEnv* env)
 {
   float cw = CELL_SIZE;
 
   // Draw hard soil (base terrain)
   rlBegin(RL_QUADS);
-  rlColor4ub(101, 67, 33, 255); // Dark Brown
   for (int i = 0; i < GRID_SIZE - 1; i++)
   {
     for (int j = 0; j < GRID_SIZE - 1; j++)
@@ -36,9 +57,17 @@ static inline void draw_heightmap_fast(SoilEnv* env)
       float h11 = env->grid_H[i+1][j+1];
       float x0 = i * cw, x1 = (i+1) * cw;
       float z0 = j * cw, z1 = (j+1) * cw;
+
+      set_hard_soil_color(h00);
       rlVertex3f(x0, h00, z0);
+
+      set_hard_soil_color(h01);
       rlVertex3f(x0, h01, z1);
+
+      set_hard_soil_color(h11);
       rlVertex3f(x1, h11, z1);
+
+      set_hard_soil_color(h10);
       rlVertex3f(x1, h10, z0);
     }
   }
@@ -46,7 +75,6 @@ static inline void draw_heightmap_fast(SoilEnv* env)
 
   // Draw loose soil on top
   rlBegin(RL_QUADS);
-  rlColor4ub(139, 90, 43, 255); // Lighter Brown
   for (int i = 0; i < GRID_SIZE - 1; i++)
   {
     for (int j = 0; j < GRID_SIZE - 1; j++)
@@ -61,9 +89,16 @@ static inline void draw_heightmap_fast(SoilEnv* env)
       float x0 = i * cw, x1 = (i+1) * cw;
       float z0 = j * cw, z1 = (j+1) * cw;
 
+      set_loose_soil_color(h00);
       rlVertex3f(x0, h00, z0);
+
+      set_loose_soil_color(h01);
       rlVertex3f(x0, h01, z1);
+
+      set_loose_soil_color(h11);
       rlVertex3f(x1, h11, z1);
+
+      set_loose_soil_color(h10);
       rlVertex3f(x1, h10, z0);
     }
   }
@@ -148,39 +183,6 @@ static inline void draw_dozer(SoilEnv* env)
   draw_rectangular_prism(blade_pos, blade_size, blade_yaw, blade_pitch, blade_roll, blade_color);
 }
 
-static inline void handle_input(SoilEnv* env)
-{
-  Dozer* dozer = &env->dozer;
-
-  if (IsKeyPressed(KEY_R))
-  {
-    c_reset(env);
-  }
-
-  // Only Keyboard (Discard gamepad for now)
-  env->actions[0] = 0;
-  env->actions[1] = 0;
-  env->actions[2] = 0;
-  env->actions[3] = 0;
-  env->actions[4] = 0;
-
-  // Keyboard always acts as an active override
-  // Map both WASD and Arrow Keys to movement just in case X11 is messing up the W keycode
-  if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP)) env->actions[0] = 1.0f;
-  if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN)) env->actions[0] = -1.0f;
-  if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) env->actions[1] = 1.0f;
-  if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) env->actions[1] = -1.0f;
-
-  // Use I/K/J/L for the blade since Arrows are now used for movement fallback
-  if (IsKeyDown(KEY_I)) env->actions[2] = 1.0f;
-  if (IsKeyDown(KEY_K)) env->actions[2] = -1.0f;
-  if (IsKeyDown(KEY_J)) env->actions[3] = 1.0f;
-  if (IsKeyDown(KEY_L)) env->actions[3] = -1.0f;
-
-  if (IsKeyDown(KEY_Q)) env->actions[4] = 1.0f;
-  if (IsKeyDown(KEY_E)) env->actions[4] = -1.0f;
-}
-
 static inline void render_step(SoilEnv* env)
 {
   Dozer* dozer = &env->dozer;
@@ -204,7 +206,15 @@ static inline void render_step(SoilEnv* env)
   DrawFPS(10, 10);
   DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll", 10, 40, 20, DARKGRAY);
 
-  DrawText("Keyboard Only Mode (Devcontainer)", 10, 70, 20, ORANGE);
+  if (IsGamepadAvailable(0)) 
+  {
+    DrawText("Gamepad", 10, 70, 20, GREEN);
+  }
+  else
+  {
+    DrawText("Keyboard", 10, 70, 20, ORANGE);
+  }
+
   DrawText(TextFormat("Lin Vel: %.2f m/s | Yaw Vel: %.2f rad/s", dozer->twist_linear_x, dozer->twist_angular_z), 10, 100, 20, BLACK);
   DrawText(TextFormat("Arm Pos: %.2f | Vel: %.2f", dozer->pos_virtual_lift_arm, dozer->vel_virtual_lift_arm), 10, 130, 20, BLACK);
   DrawText(TextFormat("Pitch Pos: %.2f | Vel: %.2f", dozer->pos_blade_pitch, dozer->vel_blade_pitch), 10, 150, 20, BLACK);

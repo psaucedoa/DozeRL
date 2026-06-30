@@ -26,12 +26,42 @@ void demo(const char* checkpoint_path)
     env->actions[2] = 0.0f;
     env->actions[3] = 0.0f;
     env->actions[4] = 0.0f;
-    if (IsKeyDown(KEY_W)) env->actions[0] = 1.0f;
-    if (IsKeyDown(KEY_S)) env->actions[0] = -1.0f;
-    if (IsKeyDown(KEY_A)) env->actions[1] = -1.0f;
-    if (IsKeyDown(KEY_D)) env->actions[1] = 1.0f;
-    if (IsKeyDown(KEY_UP)) env->actions[2] = 1.0f;
-    if (IsKeyDown(KEY_DOWN)) env->actions[2] = -1.0f;
+
+    if (IsKeyPressed(KEY_R))
+    {
+      c_reset(env);
+    }
+
+    if (!IsKeyDown(KEY_LEFT_SHIFT) && IsGamepadAvailable(0))
+    {
+      float left_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
+      env->actions[0] = -left_y;
+
+      float left_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X);
+      env->actions[1] = left_x;
+
+      float right_y = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_Y);
+      env->actions[2] = -right_y;
+
+      float right_x = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_X);
+      env->actions[3] = right_x;
+
+      float lt = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_TRIGGER);
+      float rt = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_TRIGGER);
+      float lt_val = (lt + 1.0f) / 2.0f;
+      float rt_val = (rt + 1.0f) / 2.0f;
+      env->actions[4] = rt_val - lt_val;
+    }
+    else
+    {
+      if (IsKeyDown(KEY_W)) env->actions[0] = 1.0f;
+      if (IsKeyDown(KEY_S)) env->actions[0] = -1.0f;
+      if (IsKeyDown(KEY_A)) env->actions[1] = -1.0f;
+      if (IsKeyDown(KEY_D)) env->actions[1] = 1.0f;
+      if (IsKeyDown(KEY_UP)) env->actions[2] = 1.0f;
+      if (IsKeyDown(KEY_DOWN)) env->actions[2] = -1.0f;
+    }
+
 
     c_step(env);
     c_render(env);
