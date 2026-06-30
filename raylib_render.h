@@ -21,23 +21,17 @@ static inline void init_render()
 
 static inline void set_hard_soil_color(float h)
 {
-  float t = h / 2.0f;
-  if (t < 0.0f) t = 0.0f;
-  if (t > 1.0f) t = 1.0f;
-  unsigned char r = (unsigned char)(130.0f + t * (205.0f - 130.0f));
-  unsigned char g = (unsigned char)(85.0f + t * (150.0f - 85.0f));
-  unsigned char b = (unsigned char)(45.0f + t * (95.0f - 45.0f));
+  unsigned char r = (unsigned char)(130.0f + h * 20.0f);
+  unsigned char g = (unsigned char)(85.0f +  h * 20.0f);
+  unsigned char b = (unsigned char)(45.0f +  h * 20.0f);
   rlColor4ub(r, g, b, 255);
 }
 
 static inline void set_loose_soil_color(float h)
 {
-  float t = h / 2.0f;
-  if (t < 0.0f) t = 0.0f;
-  if (t > 1.0f) t = 1.0f;
-  unsigned char r = (unsigned char)(70.0f + t * (130.0f - 70.0f));
-  unsigned char g = (unsigned char)(40.0f + t * (85.0f - 40.0f));
-  unsigned char b = (unsigned char)(20.0f + t * (50.0f - 20.0f));
+  unsigned char r = (unsigned char)(70.0f + h * 20.0f);
+  unsigned char g = (unsigned char)(40.0f + h * 20.0f);
+  unsigned char b = (unsigned char)(20.0f + h * 20.0f);
   rlColor4ub(r, g, b, 255);
 }
 
@@ -105,82 +99,142 @@ static inline void draw_heightmap_fast(SoilEnv* env)
   rlEnd();
 }
 
-static inline void draw_rectangular_prism(Vector3 center, Vector3 size, float yaw, float pitch, float roll, Color color)
+// raylib has a weird coordinate system (x, -z, y)
+static inline void draw_rectangular_prism(Vector3 position, Vector3 rotation, Vector3 size, Color color)
 {
   rlPushMatrix();
-  rlTranslatef(center.x, center.y, center.z);
-  rlRotatef(yaw * RAD2DEG, 0.0f, 1.0f, 0.0f);   // Yaw around Y
-  rlRotatef(pitch * RAD2DEG, 1.0f, 0.0f, 0.0f); // Pitch around X
-  rlRotatef(roll * RAD2DEG, 0.0f, 0.0f, 1.0f);  // Roll around Z
+  rlTranslatef(position.x, position.z, position.y);
+  rlRotatef(rotation.x, 1.0f, 0.0f, 0.0f);  // Pitch around X
+  rlRotatef(-rotation.z * RAD2DEG, 0.0f, 1.0f, 0.0f);  // Yaw around Y
+  rlRotatef(rotation.y * RAD2DEG, 0.0f, 0.0f, 1.0f);  // Roll around Z
 
-  DrawCube((Vector3){0,0,0}, size.x, size.y, size.z, color);
-  DrawCubeWires((Vector3){0,0,0}, size.x, size.y, size.z, BLACK);
+  DrawCube((Vector3){0,0,0}, size.x, size.z, size.y, color);
+  DrawCubeWires((Vector3){0,0,0}, size.x, size.z, size.y, BLACK);
 
   rlPopMatrix();
+}
+
+static inline void render_forward_kinematics(Dozer* dozer, Vector3* pitch_joint, Vector3* u_joint, Vector3* blade_edge)
+{
+  // NEED: angular_x. amgular_y, angular_z
+
+  // Local coordinates of the blade joint relative to chassis origin
+  float theta_arm = dozer->pos_virtual_lift_arm;
+  float theta_pitch = dozer->pos_virtual_lift_arm;
+  float theta_rake = dozer->blade_mount_pitch;
+
+  float x0_pitch_joint = dozer->arm_pivot_x + dozer->arm_length * cosf(theta_arm);
+  float y0_pitch_joint = 0;
+  float z0_pitch_joint = dozer->arm_pivot_z + dozer->arm_length * sinf(theta_arm);
+
+  float x0_u_joint = x0_pitch_joint + dozer->pitch_length * cosf(theta_arm + theta_pitch);
+  float y0_u_joint = 0;
+  float z0_u_joint = z0_pitch_joint + dozer->pitch_length * sinf(theta_arm + theta_pitch);
+
+  float x0_blade_edge = x0_u_joint + dozer->blade_height * 0.5 * cosf(theta_arm + theta_pitch + theta_rake);
+  float y0_blade_edge = 0;
+  float z0_blade_edge = z0_u_joint + dozer->pitch_length * 0.5 * sinf(theta_arm + theta_pitch + theta_rake);
+
+  // apply chasis roll rotation
+  float x1_pitch_joint = x0_pitch_joint;
+  float y1_pitch_joint = z0_pitch_joint * -sinf(dozer->angular_x);  // the other component is zero since y=0
+  float z1_pitch_joint = z0_pitch_joint * cosf(dozer->angular_x);  // the other component is zero since y=0
+
+  float x1_u_joint = x0_u_joint;
+  float y1_u_joint = z0_u_joint * -sinf(dozer->angular_x);  // the other component is zero since y=0
+  float z1_u_joint = z0_u_joint * cosf(dozer->angular_x);  // the other component is zero since y=0
+
+  float x1_blade_edge = x0_blade_edge;
+  float y1_blade_edge = z0_blade_edge * -sinf(dozer->angular_x);
+  float z1_blade_edge = z0_blade_edge * cosf(dozer->angular_x);
+
+  // apply chassis pitch rotation
+  float cos_p = cosf(dozer->angular_y);
+  float sin_p = sinf(dozer->angular_y);
+
+  float x2_pitch_joint = x1_pitch_joint * cos_p - z1_pitch_joint * sin_p;
+  float y2_pitch_joint = y1_pitch_joint;
+  float z2_pitch_joint = x1_pitch_joint * sin_p + z1_pitch_joint * cos_p;
+
+  float x2_u_joint = x1_u_joint * cos_p - z1_u_joint * sin_p;
+  float y2_u_joint = y1_u_joint;
+  float z2_u_joint = x1_u_joint * sin_p + z1_u_joint * cos_p;
+
+  float x2_blade_edge = x1_blade_edge * cos_p - z1_blade_edge * sin_p;
+  float y2_blade_edge = y1_blade_edge;
+  float z2_blade_edge = x1_blade_edge * sin_p + z1_blade_edge * cos_p;
+
+  // apply chassis yaw rotation
+  float cos_y = cosf(dozer->angular_z);
+  float sin_y = sinf(dozer->angular_z);
+
+  float x3_pitch_joint = x2_pitch_joint * cos_y - y2_pitch_joint * sin_y;
+  float y3_pitch_joint = x2_pitch_joint * sin_y + y2_pitch_joint * cos_y;
+  float z3_pitch_joint = z2_pitch_joint;
+
+  float x3_u_joint = x2_u_joint * cos_y - y2_u_joint * sin_y;
+  float y3_u_joint = x2_u_joint * sin_y + y2_u_joint * cos_y;
+  float z3_u_joint = z2_u_joint;
+
+  float x3_blade_edge = x2_blade_edge * cos_y - y2_blade_edge * sin_y;
+  float y3_blade_edge = x2_blade_edge * sin_y + y2_blade_edge * cos_y;
+  float z3_blade_edge = z2_blade_edge;
+
+  // get global joint coordinates
+  pitch_joint->x = dozer->position_x + x3_pitch_joint;
+  pitch_joint->y = dozer->position_y + y3_pitch_joint;
+  pitch_joint->z = dozer->position_z + z3_pitch_joint;
+
+  u_joint->x = dozer->position_x + x3_u_joint;
+  u_joint->y = dozer->position_y + y3_u_joint;
+  u_joint->z = dozer->position_z + z3_u_joint;
+
+  blade_edge->x = dozer->position_x + x3_blade_edge;
+  blade_edge->y = dozer->position_y + y3_blade_edge;
+  blade_edge->z = dozer->position_z + z3_blade_edge;
 }
 
 static inline void draw_dozer(SoilEnv* env)
 {
   Dozer* dozer = &env->dozer;
 
-  Color chassis_color = (Color){210, 180, 140, 255};      // Desert Tan
+  Color chassis_color = (Color){210, 180, 140, 055};      // Desert Tan
   Color arm_color = (Color){180, 150, 110, 255};          // Darker Desert Tan
   Color track_color = (Color){60, 60, 60, 255};           // Dark Grey
   Color blade_color = (Color){80, 80, 80, 255};           // Dark Grey
+  Color yellow = (Color){255, 255, 0, 255};  //yellow
 
-  float raylib_yaw = -dozer->angular_z; 
-  float raylib_pitch = dozer->angular_y;
-  float raylib_roll = dozer->angular_x;
+  Vector3 pitch_joint = {0.0f, 0.0f, 0.0f};
+  Vector3 u_joint     = {0.0f, 0.0f, 0.0f};
+  Vector3 blade_edge  = {0.0f, 0.0f, 0.0f};
+
+  float track_height   = 0.41f;  // m
+  float chassis_length = 2.54f;  // m
+  float chassis_width  = 1.00f;  // m
+  float chassis_height = 1.87f;  // m
+  float gauge_offset = dozer->track_gauge * 0.5f;
+  float track_offset = dozer->track_width * 0.5f;
+
+  render_forward_kinematics(dozer, &pitch_joint, &u_joint, &blade_edge);
 
   // Chassis
-  Vector3 chassis_pos = { dozer->position_x, dozer->position_z + 0.9f, dozer->position_y };
-  Vector3 chassis_size = { 2.54f, 1.8669f, 0.889f };
-  draw_rectangular_prism(chassis_pos, chassis_size, raylib_yaw, raylib_pitch, raylib_roll, chassis_color);
+  // Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};  // x, y, z
+  Vector3 chassis_size = {1.5f, 1.5f, 1.5f};
+  Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z};
+  Vector3 chassis_rot = {dozer->angular_x, dozer->angular_y, dozer->angular_z};
+  draw_rectangular_prism(chassis_pos, chassis_rot, chassis_size, yellow);
 
-  // Tracks (Left & Right)
-  Vector3 track_size = { dozer->track_length, 0.4064f, dozer->track_width };
-  float gauge_offset = dozer->track_gauge / 2.0f;
+  // pitch joint
+  Vector3 joint_size = {0.5f, 0.5f, 0.5f};
+  Vector3 pitch_joint_size = {0.5f, 0.5f, 0.5f};
+  Vector3 pitch_joint_rot = {dozer->angular_x, dozer->angular_y + dozer->pos_blade_pitch + dozer->pos_virtual_lift_arm, dozer->angular_z};
+  draw_rectangular_prism(pitch_joint, pitch_joint_rot, joint_size, yellow);
 
-  Vector3 track_pos_l =
-  {
-    dozer->position_x - gauge_offset * sinf(dozer->angular_z),
-    dozer->position_z + 0.2f, 
-    dozer->position_y + gauge_offset * cosf(dozer->angular_z) 
-  };
+  // u_joint
 
-  draw_rectangular_prism(track_pos_l, track_size, raylib_yaw, raylib_pitch, raylib_roll, track_color);
+  // blade_edge
 
-  Vector3 track_pos_r = {
-    dozer->position_x + gauge_offset * sinf(dozer->angular_z),
-    dozer->position_z + 0.2f, 
-    dozer->position_y - gauge_offset * cosf(dozer->angular_z) 
-  };
-  draw_rectangular_prism(track_pos_r, track_size, raylib_yaw, raylib_pitch, raylib_roll, track_color);
-
-  // Virtual Arms (Left & Right)
-  float theta_arm = dozer->pos_virtual_lift_arm;
-  float arm_x = dozer->position_x + (dozer->arm_pivot_x + dozer->arm_length * 0.5f * cosf(theta_arm)) * cosf(dozer->angular_z);
-  float arm_y = dozer->position_y + (dozer->arm_pivot_x + dozer->arm_length * 0.5f * cosf(theta_arm)) * sinf(dozer->angular_z);
-  float arm_z = dozer->position_z + dozer->arm_pivot_z + dozer->arm_length * 0.5f * sinf(theta_arm);
-
-  Vector3 arm_size = { dozer->arm_length, 0.1f, 0.1f };
-  float arm_offset = 0.5f; // From viz.py arm_y_left/right
-
-  Vector3 arm_pos_l = { arm_x - arm_offset * sinf(dozer->angular_z), arm_z, arm_y + arm_offset * cosf(dozer->angular_z) };
-  draw_rectangular_prism(arm_pos_l, arm_size, raylib_yaw, raylib_pitch - theta_arm, raylib_roll, arm_color);
-
-  Vector3 arm_pos_r = { arm_x + arm_offset * sinf(dozer->angular_z), arm_z, arm_y - arm_offset * cosf(dozer->angular_z) };
-  draw_rectangular_prism(arm_pos_r, arm_size, raylib_yaw, raylib_pitch - theta_arm, raylib_roll, arm_color);
-
-  // Blade
-  Vector3 blade_pos = { dozer->blade_x, dozer->blade_z, dozer->blade_y };
-  Vector3 blade_size = { 0.1f, dozer->blade_height, dozer->blade_width };
-
-  float blade_yaw = -dozer->angular_z; 
-  float blade_pitch = dozer->angular_y + dozer->pos_blade_pitch;
-  float blade_roll = dozer->angular_x + dozer->pos_blade_roll;
-
-  draw_rectangular_prism(blade_pos, blade_size, blade_yaw, blade_pitch, blade_roll, blade_color);
+//   draw_rectangular_prism(track_pos_r_local, track_size, global_translation, global_rotation, track_color);
 }
 
 static inline void render_step(SoilEnv* env)
