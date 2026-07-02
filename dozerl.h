@@ -62,6 +62,7 @@ typedef struct
   float twist_linear_x;   // (m/s)   Dozer linear velocity about X axis
   float twist_linear_y;   // (m/s)   Dozer linear velocity about Y axis
   float twist_linear_z;   // (m/s)   Dozer linear velocity about Z axis
+  float q[4];             // [w, x, y, z] quaternion orientation of the chassis
 
   // Effort Inputs (-1.0 to 1.0)
   float effort_lift;        // efort
@@ -135,7 +136,7 @@ typedef struct
   float last_roll_moment; // (N*m)
 
   // Actuator Dynamics Constants
-  float max_torque_list_arm;
+  float max_torque_lift_arm;
   float max_torque_pitch;
   float max_torque_roll;
   float max_torque_rotational;
@@ -490,81 +491,143 @@ static inline void update_chassis_pose(SoilEnv* env)
   dozer->position_z = (sum_height_left + sum_height_right) / (2.0f * num_samples);
   dozer->angular_y = (atan2f(sum_moment_left / sum_length_squared, 1.0f) + atan2f(sum_moment_right / sum_length_squared, 1.0f)) / 2.0f; // Pitch
   dozer->angular_x = atan2f((sum_height_left - sum_height_right) / num_samples, dozer->track_gauge); // Roll
+
+  // Keep chassis orientation quaternion updated
+  euler_to_quat(dozer->angular_x, -dozer->angular_y, dozer->angular_z, dozer->q);
 }
 
 static inline void forward_kinematics(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // Local coordinates of the blade joint relative to chassis origin
   float theta_arm = dozer->pos_virtual_lift_arm;
   float theta_pitch = dozer->pos_blade_pitch;
   float theta_rake = dozer->blade_mount_pitch;
 
-  float lift_arm_joint[6];
-  lift_arm_joint[0] = dozer->arm_pivot_x;  // x
-  lift_arm_joint[1] = 0;                   // y
-  lift_arm_joint[2] = dozer->arm_pivot_z;  // z
-  lift_arm_joint[3] = 0;                            // roll - no control
-  lift_arm_joint[4] = -theta_arm;                  // pitch (right-handed: negative for upward pitch)
-  lift_arm_joint[5] = 0;                            // yaw - no control
+  // 1. Lift arm joint (local in chassis frame)
+  float q_arm_local[4];
+  euler_to_quat(0.0f, -theta_arm, 0.0f, q_arm_local);
 
-  float pitch_joint[6];
-  pitch_joint[0] = lift_arm_joint[0] + dozer->arm_length * cosf(theta_arm);  // x
-  pitch_joint[1] = lift_arm_joint[1];                                        // y
-  pitch_joint[2] = lift_arm_joint[2] + dozer->arm_length * sinf(theta_arm);  // z
-  pitch_joint[3] = 0;                                           // roll - no control
-  pitch_joint[4] = lift_arm_joint[4] - dozer->pos_blade_pitch;  // pitch (right-handed: -theta_arm - theta_pitch)
-  pitch_joint[5] = 0;                                           // yaw - no control
+  float lift_arm_local_pos[3] = {dozer->arm_pivot_x, 0.0f, dozer->arm_pivot_z};
 
-  float u_joint[6];
-  u_joint[0] = pitch_joint[0] + dozer->pitch_length * cosf(theta_arm + theta_pitch);
-  u_joint[1] = pitch_joint[1];
-  u_joint[2] = pitch_joint[2] + dozer->pitch_length * sinf(theta_arm + theta_pitch);
-  u_joint[3] = dozer->pos_blade_roll;
-  u_joint[4] = pitch_joint[4];
-  u_joint[5] = dozer->pos_blade_yaw;
+  // 2. Pitch joint (local in chassis frame)
+  float arm_vector[3] = {dozer->arm_length, 0.0f, 0.0f};
+  float arm_offset[3];
+  quat_rotate(q_arm_local, arm_vector, arm_offset);
 
-  // Compute blade edge offset in u_joint frame
-  float blade_edge[6] = {0.0f, 0.0f, dozer->blade_height * -0.5f, 0.0f, 0.0f, 0.0f};
-  float blade_rot[3] = {dozer->pos_blade_roll, -(theta_arm + theta_pitch + theta_rake), dozer->pos_blade_yaw};
-  rotate(blade_edge, blade_rot);
-  
-  blade_edge[0] += u_joint[0];
-  blade_edge[1] += u_joint[1];
-  blade_edge[2] += u_joint[2];
-  blade_edge[3] = dozer->pos_blade_roll;
-  blade_edge[4] = -(theta_arm + theta_pitch + theta_rake);
-  blade_edge[5] = dozer->pos_blade_yaw;
+  float pitch_joint_local_pos[3] = {
+    lift_arm_local_pos[0] + arm_offset[0],
+    lift_arm_local_pos[1] + arm_offset[1],
+    lift_arm_local_pos[2] + arm_offset[2]
+  };
 
-  // Apply chassis rotation to joints
-  float rotations[3] = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
-  float translation[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
+  float q_pitch_rel[4];
+  euler_to_quat(0.0f, -theta_pitch, 0.0f, q_pitch_rel);
 
-  // lift arm
-  rotate(lift_arm_joint, rotations);  // apply rotation
-  translate(lift_arm_joint, translation);  // apply translation
-  memcpy(dozer->_lift_arm_joint_pose, lift_arm_joint, 6*sizeof(float));  // copy to main struct
+  float q_pitch_local[4];
+  quat_multiply(q_arm_local, q_pitch_rel, q_pitch_local);
 
-  // pitch_joint
-  rotate(pitch_joint, rotations);  // apply rotation
-  translate(pitch_joint, translation);  // apply translation
-  memcpy(dozer->_pitch_joint_pose, pitch_joint, 6*sizeof(float));  // copy to main struct
+  // 3. Universal joint (local in chassis frame)
+  float pitch_vector[3] = {dozer->pitch_length, 0.0f, 0.0f};
+  float pitch_offset[3];
+  quat_rotate(q_pitch_local, pitch_vector, pitch_offset);
 
-  // u_joint
-  rotate(u_joint, rotations);  // apply rotation
-  translate(u_joint, translation);  // apply translation
-  memcpy(dozer->_u_joint_pose, u_joint, 6*sizeof(float));  // copy to main struct
+  float u_joint_local_pos[3] = {
+    pitch_joint_local_pos[0] + pitch_offset[0],
+    pitch_joint_local_pos[1] + pitch_offset[1],
+    pitch_joint_local_pos[2] + pitch_offset[2]
+  };
 
-  // blade_edge
-  rotate(blade_edge, rotations);  // apply rotation
-  translate(blade_edge, translation);  // apply translation
-  memcpy(dozer->_blade_edge_pose, blade_edge, 6*sizeof(float));  // copy to main struct
+  float q_u_joint_rel[4];
+  euler_to_quat(dozer->pos_blade_roll, 0.0f, dozer->pos_blade_yaw, q_u_joint_rel);
 
-  // get global blade edge coordinates
-  dozer->blade_x = blade_edge[0];
-  dozer->blade_y = blade_edge[1];
-  dozer->blade_z = blade_edge[2];
+  float q_u_joint_local[4];
+  quat_multiply(q_pitch_local, q_u_joint_rel, q_u_joint_local);
+
+  // 4. Blade edge (local in chassis frame)
+  float q_blade_rel[4];
+  euler_to_quat(dozer->pos_blade_roll, -theta_rake, dozer->pos_blade_yaw, q_blade_rel);
+
+  float q_blade_local[4];
+  quat_multiply(q_pitch_local, q_blade_rel, q_blade_local);
+
+  float blade_edge_vector[3] = {0.0f, 0.0f, dozer->blade_height * -0.5f};
+  float blade_edge_offset[3];
+  quat_rotate(q_blade_local, blade_edge_vector, blade_edge_offset);
+
+  float blade_edge_local_pos[3] = {
+    u_joint_local_pos[0] + blade_edge_offset[0],
+    u_joint_local_pos[1] + blade_edge_offset[1],
+    u_joint_local_pos[2] + blade_edge_offset[2]
+  };
+
+  // 5. Transform all joints from chassis local frame to world frame using dozer->q
+  float chassis_pos[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
+
+  // Lift arm joint world pose
+  float lift_arm_world_pos[3];
+  quat_rotate(dozer->q, lift_arm_local_pos, lift_arm_world_pos);
+  dozer->_lift_arm_joint_pose[0] = lift_arm_world_pos[0] + chassis_pos[0];
+  dozer->_lift_arm_joint_pose[1] = lift_arm_world_pos[1] + chassis_pos[1];
+  dozer->_lift_arm_joint_pose[2] = lift_arm_world_pos[2] + chassis_pos[2];
+
+  float q_arm_world[4];
+  quat_multiply(dozer->q, q_arm_local, q_arm_world);
+  float rpy_arm[3];
+  quat_to_euler(q_arm_world, rpy_arm);
+  dozer->_lift_arm_joint_pose[3] = rpy_arm[0];
+  dozer->_lift_arm_joint_pose[4] = rpy_arm[1];
+  dozer->_lift_arm_joint_pose[5] = rpy_arm[2];
+
+  // Pitch joint world pose
+  float pitch_joint_world_pos[3];
+  quat_rotate(dozer->q, pitch_joint_local_pos, pitch_joint_world_pos);
+  dozer->_pitch_joint_pose[0] = pitch_joint_world_pos[0] + chassis_pos[0];
+  dozer->_pitch_joint_pose[1] = pitch_joint_world_pos[1] + chassis_pos[1];
+  dozer->_pitch_joint_pose[2] = pitch_joint_world_pos[2] + chassis_pos[2];
+
+  float q_pitch_world[4];
+  quat_multiply(dozer->q, q_pitch_local, q_pitch_world);
+  float rpy_pitch[3];
+  quat_to_euler(q_pitch_world, rpy_pitch);
+  dozer->_pitch_joint_pose[3] = rpy_pitch[0];
+  dozer->_pitch_joint_pose[4] = rpy_pitch[1];
+  dozer->_pitch_joint_pose[5] = rpy_pitch[2];
+
+  // U-joint world pose
+  float u_joint_world_pos[3];
+  quat_rotate(dozer->q, u_joint_local_pos, u_joint_world_pos);
+  dozer->_u_joint_pose[0] = u_joint_world_pos[0] + chassis_pos[0];
+  dozer->_u_joint_pose[1] = u_joint_world_pos[1] + chassis_pos[1];
+  dozer->_u_joint_pose[2] = u_joint_world_pos[2] + chassis_pos[2];
+
+  float q_u_joint_world[4];
+  quat_multiply(dozer->q, q_u_joint_local, q_u_joint_world);
+  float rpy_u_joint[3];
+  quat_to_euler(q_u_joint_world, rpy_u_joint);
+  dozer->_u_joint_pose[3] = rpy_u_joint[0];
+  dozer->_u_joint_pose[4] = rpy_u_joint[1];
+  dozer->_u_joint_pose[5] = rpy_u_joint[2];
+
+  // Blade edge world pose
+  float blade_edge_world_pos[3];
+  quat_rotate(dozer->q, blade_edge_local_pos, blade_edge_world_pos);
+  dozer->_blade_edge_pose[0] = blade_edge_world_pos[0] + chassis_pos[0];
+  dozer->_blade_edge_pose[1] = blade_edge_world_pos[1] + chassis_pos[1];
+  dozer->_blade_edge_pose[2] = blade_edge_world_pos[2] + chassis_pos[2];
+
+  float q_blade_world[4];
+  quat_multiply(dozer->q, q_blade_local, q_blade_world);
+  float rpy_blade[3];
+  quat_to_euler(q_blade_world, rpy_blade);
+  dozer->_blade_edge_pose[3] = rpy_blade[0];
+  dozer->_blade_edge_pose[4] = rpy_blade[1];
+  dozer->_blade_edge_pose[5] = rpy_blade[2];
+
+  // Get global blade edge coordinates
+  dozer->blade_x = dozer->_blade_edge_pose[0];
+  dozer->blade_y = dozer->_blade_edge_pose[1];
+  dozer->blade_z = dozer->_blade_edge_pose[2];
 }
 
 static inline void update_kinematics(SoilEnv* env)
@@ -602,8 +665,8 @@ static inline void update_kinematics(SoilEnv* env)
     {
       for (int j = min_j; j <= max_j; j++)
       {
-        float dx = (i * CELL_SIZE) - dozer->position_x;
-        float dy = (j * CELL_SIZE) - dozer->position_y;
+        float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
+        float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
         float local_x = dx * cos_y + dy * sin_y;
         float local_y = -dx * sin_y + dy * cos_y;
 
@@ -649,8 +712,8 @@ static inline void update_kinematics(SoilEnv* env)
         for (int j = min_j; j <= max_j; j++)
         {
           if (env->grid_L[i][j] < 0.001f) continue;
-          float dx = (i * CELL_SIZE) - dozer->position_x;
-          float dy = (j * CELL_SIZE) - dozer->position_y;
+          float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
+          float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
           float local_x = dx * cos_y + dy * sin_y;
           float local_y = -dx * sin_y + dy * cos_y;
 
@@ -736,9 +799,38 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
 static inline void update_chassis_2d_position(SoilEnv* env, float dt)
 {
   Dozer * dozer = &env->dozer;
-  dozer->angular_z += dozer->twist_angular_z * dt;
-  dozer->position_x += dozer->twist_linear_x * cosf(dozer->angular_z) * dt;
-  dozer->position_y += dozer->twist_linear_x * sinf(dozer->angular_z) * dt;
+
+  // 1. Update orientation quaternion by integrating local angular velocity around Z axis
+  float theta = dozer->twist_angular_z * dt;
+  float q_rot[4] = {cosf(theta * 0.5f), 0.0f, 0.0f, sinf(theta * 0.5f)};
+  
+  float q_new[4];
+  quat_multiply(dozer->q, q_rot, q_new);
+  
+  // Normalize the quaternion
+  float len = sqrtf(q_new[0]*q_new[0] + q_new[1]*q_new[1] + q_new[2]*q_new[2] + q_new[3]*q_new[3]);
+  if (len > 1e-6f)
+  {
+    dozer->q[0] = q_new[0] / len;
+    dozer->q[1] = q_new[1] / len;
+    dozer->q[2] = q_new[2] / len;
+    dozer->q[3] = q_new[3] / len;
+  }
+
+  // 2. Rotate local velocity [twist_linear_x, 0, 0] to world frame using chassis quaternion
+  float v_local[3] = {dozer->twist_linear_x, 0.0f, 0.0f};
+  float v_world[3];
+  quat_rotate(dozer->q, v_local, v_world);
+
+  dozer->position_x += v_world[0] * dt;
+  dozer->position_y += v_world[1] * dt;
+  
+  // 3. Keep Euler angles in sync for logging/rendering/coordinate projection
+  float rpy[3];
+  quat_to_euler(dozer->q, rpy);
+  dozer->angular_x = rpy[0];
+  dozer->angular_y = -rpy[1]; // pitch is negative for nose-up in right-handed coordinates
+  dozer->angular_z = rpy[2];
 }
 
 static inline float calculate_FEE_column(SoilEnv* env, float hard_depth, float total_depth, float width)
@@ -766,22 +858,27 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   float total_roll_moment = 0.0f;
   float total_vol_cut = 0.0f;
 
-  // precalculate some trigs
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
-
-  float total_roll = dozer->angular_x + dozer->pos_blade_roll;
-  float sin_total_roll = sinf(total_roll);
-
-  // Bresenham's Line Algorithm to discretize blade over the grid
-  // 1. Find start and end coordinates of the blade in meters
   float half_w = dozer->blade_width / 2.0f;
-  float start_m_x = dozer->blade_x - (-half_w) * sin_y; // Left edge
-  float start_m_y = dozer->blade_y + (-half_w) * cos_y;
-  float end_m_x = dozer->blade_x - (half_w) * sin_y;   // Right edge
-  float end_m_y = dozer->blade_y + (half_w) * cos_y;
 
-  // 2. Convert to grid indices
+  // 1. Get blade orientation quaternion
+  float q_blade[4];
+  euler_to_quat(dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5], q_blade);
+
+  // 2. Compute unit vectors of the blade frame in the world frame
+  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
+  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
+  float x_axis_world[3];
+  float y_axis_world[3];
+  quat_rotate(q_blade, x_axis_local, x_axis_world);
+  quat_rotate(q_blade, y_axis_local, y_axis_world);
+
+  // Find start (left) and end (right) coordinates of the blade in meters
+  float start_m_x = dozer->blade_x + y_axis_world[0] * half_w;
+  float start_m_y = dozer->blade_y + y_axis_world[1] * half_w;
+  float end_m_x = dozer->blade_x - y_axis_world[0] * half_w;
+  float end_m_y = dozer->blade_y - y_axis_world[1] * half_w;
+
+  // 3. Convert to grid indices
   int x0 = (int)(start_m_x / CELL_SIZE);
   int y0 = (int)(start_m_y / CELL_SIZE);
   int x1 = (int)(end_m_x / CELL_SIZE);
@@ -793,9 +890,14 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   int sy = (y0 < y1) ? 1 : -1;
   int err = dx_i - dy_i;
 
+  // Direction of the blade's forward vector projected on the horizontal (X-Y) plane
+  float x_denom = sqrtf(x_axis_world[0] * x_axis_world[0] + x_axis_world[1] * x_axis_world[1]);
+  if (x_denom < 1e-6f) x_denom = 1e-6f;
+  float fwd_dir_x = x_axis_world[0] / x_denom;
+  float fwd_dir_y = x_axis_world[1] / x_denom;
+
   // Effective width of blade per intersected cell to conserve mass/force geometry.
-  // When diagonal, this properly scales up to CELL_SIZE * sqrt(2) to prevent force loss.
-  float effective_width = CELL_SIZE / fmaxf(fabsf(cos_y), fabsf(sin_y));
+  float effective_width = CELL_SIZE / fmaxf(fabsf(fwd_dir_x), fabsf(fwd_dir_y));
 
   // Arrays to store exactly which cells we visited to deposit cut volume later
   int visited_x[100];
@@ -814,13 +916,18 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       }
 
       // Calculate the moment arm (local_y) and blade elevation at this specific grid cell
-      float cell_m_x = x0 * CELL_SIZE;
-      float cell_m_y = y0 * CELL_SIZE;
+      float cell_m_x = (x0 + 0.5f) * CELL_SIZE;
+      float cell_m_y = (y0 + 0.5f) * CELL_SIZE;
       float dx = cell_m_x - dozer->blade_x;
       float dy = cell_m_y - dozer->blade_y;
-      float local_y = -dx * sin_y + dy * cos_y;
 
-      float section_blade_z = dozer->blade_z + local_y * sin_total_roll;
+      // Project the offset onto the 2D projected y_axis_world
+      float denom = y_axis_world[0] * y_axis_world[0] + y_axis_world[1] * y_axis_world[1];
+      if (denom < 1e-6f) denom = 1e-6f;
+      float local_y = (dx * y_axis_world[0] + dy * y_axis_world[1]) / denom;
+
+      // The exact 3D height of the blade at this lateral position
+      float section_blade_z = dozer->blade_z + local_y * y_axis_world[2];
 
       // 3. Cut the soil (remove from heightmap, convert to loose)
       float total_h = env->grid_H[x0][y0] + env->grid_L[x0][y0];
@@ -843,8 +950,8 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       }
 
       // 4. Calculate FEE force on the unyielding soil 1 cell directly in front
-      float front_x = cell_m_x + CELL_SIZE * cos_y;
-      float front_y = cell_m_y + CELL_SIZE * sin_y;
+      float front_x = cell_m_x + CELL_SIZE * fwd_dir_x;
+      float front_y = cell_m_y + CELL_SIZE * fwd_dir_y;
       int f_grid_x = (int)(front_x / CELL_SIZE);
       int f_grid_y = (int)(front_y / CELL_SIZE);
 
@@ -881,9 +988,9 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       int cx = visited_x[s];
       int cy = visited_y[s];
 
-      // Push dirt forward 1 cell length in the direction of travel
-      float dep_global_x = cx * CELL_SIZE + CELL_SIZE * cos_y;
-      float dep_global_y = cy * CELL_SIZE + CELL_SIZE * sin_y;
+      // Push dirt forward 1 cell length in the direction of blade forward travel
+      float dep_global_x = (cx + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_x;
+      float dep_global_y = (cy + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_y;
 
       int dep_x = (int)(dep_global_x / CELL_SIZE);
       int dep_y = (int)(dep_global_y / CELL_SIZE);
@@ -910,7 +1017,7 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
     arm_total_extern_torque *= (1.0f - dozer->hydraulic_stiffness);
   }
 
-  dozer->vel_virtual_lift_arm = (dozer->vel_virtual_lift_arm + ((dozer->effort_lift * dozer->max_torque_list_arm + arm_total_extern_torque) / dozer->arm_inertia) * dt) / (1.0f + (dozer->virtual_lift_arm_damping / dozer->arm_inertia) * dt);
+  dozer->vel_virtual_lift_arm = (dozer->vel_virtual_lift_arm + ((dozer->effort_lift * dozer->max_torque_lift_arm + arm_total_extern_torque) / dozer->arm_inertia) * dt) / (1.0f + (dozer->virtual_lift_arm_damping / dozer->arm_inertia) * dt);
 
   float PITCH_LINK_CG = 0.75f;
   float pitch_gravity_torque = dozer->pitch_mass * GRAVITY * dozer->pitch_length * PITCH_LINK_CG * cosf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch);
@@ -966,6 +1073,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
   float tan_phi = tanf(env->soil_phi);
 
   float temp_L[GRID_SIZE][GRID_SIZE];  // hoisted outside loop to prevent repeated stack allocations
+  float delta_L[GRID_SIZE][GRID_SIZE]; // Array to accumulate symmetric slumping changes
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
 
@@ -976,6 +1084,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
       for (int j = min_j; j <= max_j; j++)
       {
         temp_L[i][j] = env->grid_L[i][j];
+        delta_L[i][j] = 0.0f;
       }
     }
 
@@ -986,15 +1095,15 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
     {
       for (int j = min_j + 1; j < max_j; j++)
       {
-        if (env->grid_L[i][j] <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
-        float total_h = env->grid_H[i][j] + env->grid_L[i][j];  // get total height at this pixel
+        if (temp_L[i][j] <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
+        float total_h = env->grid_H[i][j] + temp_L[i][j];  // get total height at this pixel
 
         for(int d=0; d<8; d++)  // look through the 8 surrounding pixels
         {
           int ni = i + dx[d], nj = j + dy[d];  // get the surrounding pixel index relative to the current pixel
 
-          float cell_x = ni * CELL_SIZE;  // get the surrounding pixel diff location in meters
-          float cell_y = nj * CELL_SIZE;
+          float cell_x = (ni + 0.5f) * CELL_SIZE;  // get the surrounding pixel diff location in meters
+          float cell_y = (nj + 0.5f) * CELL_SIZE;
 
           float dx_cell = cell_x - dozer->blade_x;
           float dy_cell = cell_y - dozer->blade_y;
@@ -1006,7 +1115,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
             if (local_x >= -loader_length && local_x <= 0.0f) continue; // prevent soil falling into the dozer
           }
 
-          float neighbor_total_h = env->grid_H[ni][nj] + env->grid_L[ni][nj];  // get total height of surrounding pixel
+          float neighbor_total_h = env->grid_H[ni][nj] + temp_L[ni][nj];  // get total height of surrounding pixel
           float dH = total_h - neighbor_total_h;
           float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f);  // if surrounding pixel is diagnoal, mult by sqrt(2)
 
@@ -1034,20 +1143,23 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
             if (t > t_limit)
             {
               float slip = (t - t_limit) * dist * 0.2f;
-              if (slip > temp_L[i][j]) slip = temp_L[i][j];
-              temp_L[i][j] -= slip;
-              temp_L[ni][nj] += slip;
-              total_h -= slip;
+              // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
+              if (slip > temp_L[i][j] / 8.0f) slip = temp_L[i][j] / 8.0f;
+              delta_L[i][j] -= slip;
+              delta_L[ni][nj] += slip;
+              // We DO NOT update total_h or temp_L here to maintain symmetry
             }
           }
         }
       }
     }
+    
     for (int i = min_i; i <= max_i; i++)
     {
       for (int j = min_j; j <= max_j; j++)
       {
-        env->grid_L[i][j] = temp_L[i][j];
+        env->grid_L[i][j] += delta_L[i][j];
+        if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f; // Prevent negative loose soil
       }
     }
   }
@@ -1070,8 +1182,27 @@ static inline void update_surcharge(SoilEnv* env)
 
   float current_surcharge_vol = 0.0f;
 
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
+  float q_blade[4];
+  euler_to_quat(dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5], q_blade);
+
+  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
+  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
+  float x_axis_world[3];
+  float y_axis_world[3];
+  quat_rotate(q_blade, x_axis_local, x_axis_world);
+  quat_rotate(q_blade, y_axis_local, y_axis_world);
+
+  // Normalize x_axis_world and y_axis_world on the XY plane for horizontal distance checks
+  float x_len = sqrtf(x_axis_world[0]*x_axis_world[0] + x_axis_world[1]*x_axis_world[1]);
+  float y_len = sqrtf(y_axis_world[0]*y_axis_world[0] + y_axis_world[1]*y_axis_world[1]);
+  if (x_len < 1e-6f) x_len = 1e-6f;
+  if (y_len < 1e-6f) y_len = 1e-6f;
+  
+  float fwd_x = x_axis_world[0] / x_len;
+  float fwd_y = x_axis_world[1] / x_len;
+  float left_x = y_axis_world[0] / y_len;
+  float left_y = y_axis_world[1] / y_len;
+
   float half_width = dozer->blade_width / 2.0f;
   float lookahead = 1.5f;
   float cell_area = CELL_SIZE * CELL_SIZE;
@@ -1082,15 +1213,15 @@ static inline void update_surcharge(SoilEnv* env)
     {
       if (env->grid_L[i][j] <= 0.0f) continue;
 
-      float cell_x = i * CELL_SIZE;
-      float cell_y = j * CELL_SIZE;
+      float cell_x = (i + 0.5f) * CELL_SIZE;
+      float cell_y = (j + 0.5f) * CELL_SIZE;
 
       float dx = cell_x - dozer->blade_x;
       float dy = cell_y - dozer->blade_y;
 
-      // Transform cell coordinates into the blade's local frame
-      float local_x = dx * cos_y + dy * sin_y;
-      float local_y = -dx * sin_y + dy * cos_y;
+      // Transform cell coordinates into the blade's local horizontal frame
+      float local_x = dx * fwd_x + dy * fwd_y;
+      float local_y = dx * left_x + dy * left_y;
 
       // Check if the cell is inside the 1.5m box directly in front of the blade
       if (local_x >= 0.0f && local_x <= lookahead && fabsf(local_y) <= half_width)
@@ -1155,11 +1286,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->blade_width = 1.85f;
   dozer->blade_height = 0.76f;
   dozer->blade_rake_angle = 30.0f * M_PI / 180.0f;
-  dozer->max_force_linear = 100000.0f;
-  dozer->max_force_rotational = 80000.0f;
-  dozer->max_torque_pitch = 15000.0f;
-  dozer->max_torque_roll = 15000.0f;
-  dozer->max_torque_list_arm = 100000.0f;
+  dozer->max_force_linear = 25000.0f;
+  dozer->max_force_rotational = 8000.0f;
+  dozer->max_torque_pitch = 3000.0f;
+  dozer->max_torque_roll = 1500.0f;
+  dozer->max_torque_lift_arm = 5000.0f;
   dozer->arm_mass = 490.0f;
   dozer->pitch_mass = 100.0f;
   dozer->arm_inertia = 7000.0f;
@@ -1176,7 +1307,7 @@ static inline void env_reset(SoilEnv* env)
   dozer->pos_blade_pitch_max = 0.5f;
   dozer->pos_blade_roll_min = -0.5f;
   dozer->pos_blade_roll_max = 0.5f;
-  
+
   dozer->arm_length = 3.8f;
   dozer->arm_pivot_x = -2.2f;
   dozer->arm_pivot_z = 1.8987f;
@@ -1186,6 +1317,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_z = 1.0f;
+
+  dozer->q[0] = 1.0f;
+  dozer->q[1] = 0.0f;
+  dozer->q[2] = 0.0f;
+  dozer->q[3] = 0.0f;
 
   for(int i = 0; i < GRID_SIZE; i++) {
     for(int j = 0; j < GRID_SIZE; j++) {
@@ -1222,7 +1358,7 @@ void c_step(SoilEnv* env)
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
 
-  simulate_step(env, 0.05f);
+  simulate_step(env, 0.167f);
 
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
