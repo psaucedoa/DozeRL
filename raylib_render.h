@@ -104,9 +104,9 @@ static inline void draw_rectangular_prism(Vector3 position, Vector3 rotation, Ve
 {
   rlPushMatrix();
   rlTranslatef(position.x, position.z, position.y);
-  rlRotatef(rotation.x * RAD2DEG, 1.0f, 0.0f, 0.0f);  // Pitch around X
   rlRotatef(-rotation.z * RAD2DEG, 0.0f, 1.0f, 0.0f);  // Yaw around Y
-  rlRotatef(rotation.y * RAD2DEG, 0.0f, 0.0f, 1.0f);  // Roll around Z
+  rlRotatef(-rotation.y * RAD2DEG, 0.0f, 0.0f, 1.0f);  // Pitch around Z
+  rlRotatef(-rotation.x * RAD2DEG, 1.0f, 0.0f, 0.0f);  // Roll around X
 
   DrawCube((Vector3){0,0,0}, size.x, size.z, size.y, color);
   DrawCubeWires((Vector3){0,0,0}, size.x, size.z, size.y, BLACK);
@@ -151,7 +151,7 @@ static inline void draw_dozer(SoilEnv* env)
   // pitch joint
   Vector3 pitch_joint_pos = {dozer->_pitch_joint_pose[0], dozer->_pitch_joint_pose[1], dozer->_pitch_joint_pose[2]};
   Vector3 pitch_joint_rot = {dozer->_pitch_joint_pose[3], dozer->_pitch_joint_pose[4], dozer->_pitch_joint_pose[5]};
-  draw_rectangular_prism(pitch_joint, pitch_joint_rot, joint_size, yellow);
+  draw_rectangular_prism(pitch_joint_pos, pitch_joint_rot, joint_size, yellow);
 
   // u_joint
   Vector3 u_joint_pos = {dozer->_u_joint_pose[0], dozer->_u_joint_pose[1], dozer->_u_joint_pose[2]};

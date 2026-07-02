@@ -220,40 +220,89 @@ typedef struct
   float spatial[2][SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
 } Observation;
 
+// Quaternion helpers
+static inline void euler_to_quat(float r, float p, float y, float q[4])
+{
+  float cx = cosf(r * 0.5f), sx = sinf(r * 0.5f);
+  float cy = cosf(p * 0.5f), sy = sinf(p * 0.5f);
+  float cz = cosf(y * 0.5f), sz = sinf(y * 0.5f);
+
+  q[0] = cx * cy * cz + sx * sy * sz; // w
+  q[1] = sx * cy * cz - cx * sy * sz; // x
+  q[2] = cx * sy * cz + sx * cy * sz; // y
+  q[3] = cx * cy * sz - sx * sy * cz; // z
+}
+
+static inline void quat_to_euler(const float q[4], float rpy[3])
+{
+  float w = q[0], x = q[1], y = q[2], z = q[3];
+
+  float r20 = 2.0f * (w * y - x * z);
+  float r21 = 2.0f * (y * z + w * x);
+  float r22 = 1.0f - 2.0f * (x * x + y * y);
+  float r10 = 2.0f * (x * y + w * z);
+  float r00 = 1.0f - 2.0f * (y * y + z * z);
+
+  rpy[1] = atan2f(r20, sqrtf(r21 * r21 + r22 * r22)); // Pitch
+  rpy[0] = atan2f(r21, r22); // Roll
+  rpy[2] = atan2f(r10, r00); // Yaw
+}
+
+static inline void quat_multiply(const float q1[4], const float q2[4], float out[4])
+{
+  float w1 = q1[0], x1 = q1[1], y1 = q1[2], z1 = q1[3];
+  float w2 = q2[0], x2 = q2[1], y2 = q2[2], z2 = q2[3];
+
+  out[0] = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2;
+  out[1] = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2;
+  out[2] = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2;
+  out[3] = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2;
+}
+
+static inline void quat_rotate(const float q[4], const float v[3], float out[3])
+{
+  float w = q[0], qx = q[1], qy = q[2], qz = q[3];
+  float vx = v[0], vy = v[1], vz = v[2];
+
+  // t = 2 * (q_xyz x v)
+  float tx = 2.0f * (qy * vz - qz * vy);
+  float ty = 2.0f * (qz * vx - qx * vz);
+  float tz = 2.0f * (qx * vy - qy * vx);
+
+  // v' = v + w * t + q_xyz x t
+  out[0] = vx + w * tx + (qy * tz - qz * ty);
+  out[1] = vy + w * ty + (qz * tx - qx * tz);
+  out[2] = vz + w * tz + (qx * ty - qy * tx);
+}
+
 // Helper: Apply rotation
 static inline void rotate(float input[6], const float rotation[3])
 {
-  float x = input[0];
-  float y = input[1];
-  float z = input[2];
+  // 1. Rotate position
+  float q_rot[4];
+  euler_to_quat(rotation[0], rotation[1], rotation[2], q_rot);
 
-  float rx = rotation[0]; // Roll
-  float ry = rotation[1]; // Pitch
-  float rz = rotation[2]; // Yaw
+  float v[3] = {input[0], input[1], input[2]};
+  float v_out[3];
+  quat_rotate(q_rot, v, v_out);
 
-  // 1. Roll (around X)
-  float x1 = x;
-  float y1 = y * cosf(rx) - z * sinf(rx);
-  float z1 = y * sinf(rx) + z * cosf(rx);
+  input[0] = v_out[0];
+  input[1] = v_out[1];
+  input[2] = v_out[2];
 
-  // 2. Pitch (around Y, positive is nose up)
-  float x2 = x1 * cosf(ry) - z1 * sinf(ry);
-  float y2 = y1;
-  float z2 = x1 * sinf(ry) + z1 * cosf(ry);
+  // 2. Rotate orientation
+  float q_input[4];
+  euler_to_quat(input[3], input[4], input[5], q_input);
 
-  // 3. Yaw (around Z, positive is turning left)
-  float x3 = x2 * cosf(rz) - y2 * sinf(rz);
-  float y3 = x2 * sinf(rz) + y2 * cosf(rz);
-  float z3 = z2;
+  float q_comb[4];
+  quat_multiply(q_rot, q_input, q_comb);
 
-  input[0] = x3;
-  input[1] = y3;
-  input[2] = z3;
+  float rpy[3];
+  quat_to_euler(q_comb, rpy);
 
-  // Add rotation to joint orientation
-  input[3] += rotation[0];
-  input[4] += rotation[1];
-  input[5] += rotation[2];
+  input[3] = rpy[0];
+  input[4] = rpy[1];
+  input[5] = rpy[2];
 }
 
 static inline void translate(float input[6], const float translation[3])
@@ -457,7 +506,7 @@ static inline void forward_kinematics(SoilEnv* env)
   lift_arm_joint[1] = 0;                   // y
   lift_arm_joint[2] = dozer->arm_pivot_z;  // z
   lift_arm_joint[3] = 0;                            // roll - no control
-  lift_arm_joint[4] = dozer->pos_virtual_lift_arm;  // pitch
+  lift_arm_joint[4] = -theta_arm;                  // pitch (right-handed: negative for upward pitch)
   lift_arm_joint[5] = 0;                            // yaw - no control
 
   float pitch_joint[6];
@@ -465,7 +514,7 @@ static inline void forward_kinematics(SoilEnv* env)
   pitch_joint[1] = lift_arm_joint[1];                                        // y
   pitch_joint[2] = lift_arm_joint[2] + dozer->arm_length * sinf(theta_arm);  // z
   pitch_joint[3] = 0;                                           // roll - no control
-  pitch_joint[4] = lift_arm_joint[4] + dozer->pos_blade_pitch;  // pitch
+  pitch_joint[4] = lift_arm_joint[4] - dozer->pos_blade_pitch;  // pitch (right-handed: -theta_arm - theta_pitch)
   pitch_joint[5] = 0;                                           // yaw - no control
 
   float u_joint[6];
@@ -478,18 +527,18 @@ static inline void forward_kinematics(SoilEnv* env)
 
   // Compute blade edge offset in u_joint frame
   float blade_edge[6] = {0.0f, 0.0f, dozer->blade_height * -0.5f, 0.0f, 0.0f, 0.0f};
-  float blade_rot[3] = {dozer->pos_blade_roll, theta_arm + theta_pitch + theta_rake, dozer->pos_blade_yaw};
+  float blade_rot[3] = {dozer->pos_blade_roll, -(theta_arm + theta_pitch + theta_rake), dozer->pos_blade_yaw};
   rotate(blade_edge, blade_rot);
   
   blade_edge[0] += u_joint[0];
   blade_edge[1] += u_joint[1];
   blade_edge[2] += u_joint[2];
   blade_edge[3] = dozer->pos_blade_roll;
-  blade_edge[4] = theta_arm + theta_pitch + theta_rake;
+  blade_edge[4] = -(theta_arm + theta_pitch + theta_rake);
   blade_edge[5] = dozer->pos_blade_yaw;
 
   // Apply chassis rotation to joints
-  float rotations[3] = {dozer->angular_x, dozer->angular_y, dozer->angular_z};
+  float rotations[3] = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
   float translation[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
 
   // lift arm
