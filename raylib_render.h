@@ -104,7 +104,7 @@ static inline void draw_rectangular_prism(Vector3 position, Vector3 rotation, Ve
 {
   rlPushMatrix();
   rlTranslatef(position.x, position.z, position.y);
-  rlRotatef(rotation.x, 1.0f, 0.0f, 0.0f);  // Pitch around X
+  rlRotatef(rotation.x * RAD2DEG, 1.0f, 0.0f, 0.0f);  // Pitch around X
   rlRotatef(-rotation.z * RAD2DEG, 0.0f, 1.0f, 0.0f);  // Yaw around Y
   rlRotatef(rotation.y * RAD2DEG, 0.0f, 0.0f, 1.0f);  // Roll around Z
 
@@ -112,86 +112,6 @@ static inline void draw_rectangular_prism(Vector3 position, Vector3 rotation, Ve
   DrawCubeWires((Vector3){0,0,0}, size.x, size.z, size.y, BLACK);
 
   rlPopMatrix();
-}
-
-static inline void render_forward_kinematics(Dozer* dozer, Vector3* pitch_joint, Vector3* u_joint, Vector3* blade_edge)
-{
-  // NEED: angular_x. amgular_y, angular_z
-
-  // Local coordinates of the blade joint relative to chassis origin
-  float theta_arm = dozer->pos_virtual_lift_arm;
-  float theta_pitch = dozer->pos_virtual_lift_arm;
-  float theta_rake = dozer->blade_mount_pitch;
-
-  float x0_pitch_joint = dozer->arm_pivot_x + dozer->arm_length * cosf(theta_arm);
-  float y0_pitch_joint = 0;
-  float z0_pitch_joint = dozer->arm_pivot_z + dozer->arm_length * sinf(theta_arm);
-
-  float x0_u_joint = x0_pitch_joint + dozer->pitch_length * cosf(theta_arm + theta_pitch);
-  float y0_u_joint = 0;
-  float z0_u_joint = z0_pitch_joint + dozer->pitch_length * sinf(theta_arm + theta_pitch);
-
-  float x0_blade_edge = x0_u_joint + dozer->blade_height * 0.5 * cosf(theta_arm + theta_pitch + theta_rake);
-  float y0_blade_edge = 0;
-  float z0_blade_edge = z0_u_joint + dozer->pitch_length * 0.5 * sinf(theta_arm + theta_pitch + theta_rake);
-
-  // apply chasis roll rotation
-  float x1_pitch_joint = x0_pitch_joint;
-  float y1_pitch_joint = z0_pitch_joint * -sinf(dozer->angular_x);  // the other component is zero since y=0
-  float z1_pitch_joint = z0_pitch_joint * cosf(dozer->angular_x);  // the other component is zero since y=0
-
-  float x1_u_joint = x0_u_joint;
-  float y1_u_joint = z0_u_joint * -sinf(dozer->angular_x);  // the other component is zero since y=0
-  float z1_u_joint = z0_u_joint * cosf(dozer->angular_x);  // the other component is zero since y=0
-
-  float x1_blade_edge = x0_blade_edge;
-  float y1_blade_edge = z0_blade_edge * -sinf(dozer->angular_x);
-  float z1_blade_edge = z0_blade_edge * cosf(dozer->angular_x);
-
-  // apply chassis pitch rotation
-  float cos_p = cosf(dozer->angular_y);
-  float sin_p = sinf(dozer->angular_y);
-
-  float x2_pitch_joint = x1_pitch_joint * cos_p - z1_pitch_joint * sin_p;
-  float y2_pitch_joint = y1_pitch_joint;
-  float z2_pitch_joint = x1_pitch_joint * sin_p + z1_pitch_joint * cos_p;
-
-  float x2_u_joint = x1_u_joint * cos_p - z1_u_joint * sin_p;
-  float y2_u_joint = y1_u_joint;
-  float z2_u_joint = x1_u_joint * sin_p + z1_u_joint * cos_p;
-
-  float x2_blade_edge = x1_blade_edge * cos_p - z1_blade_edge * sin_p;
-  float y2_blade_edge = y1_blade_edge;
-  float z2_blade_edge = x1_blade_edge * sin_p + z1_blade_edge * cos_p;
-
-  // apply chassis yaw rotation
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
-
-  float x3_pitch_joint = x2_pitch_joint * cos_y - y2_pitch_joint * sin_y;
-  float y3_pitch_joint = x2_pitch_joint * sin_y + y2_pitch_joint * cos_y;
-  float z3_pitch_joint = z2_pitch_joint;
-
-  float x3_u_joint = x2_u_joint * cos_y - y2_u_joint * sin_y;
-  float y3_u_joint = x2_u_joint * sin_y + y2_u_joint * cos_y;
-  float z3_u_joint = z2_u_joint;
-
-  float x3_blade_edge = x2_blade_edge * cos_y - y2_blade_edge * sin_y;
-  float y3_blade_edge = x2_blade_edge * sin_y + y2_blade_edge * cos_y;
-  float z3_blade_edge = z2_blade_edge;
-
-  // get global joint coordinates
-  pitch_joint->x = dozer->position_x + x3_pitch_joint;
-  pitch_joint->y = dozer->position_y + y3_pitch_joint;
-  pitch_joint->z = dozer->position_z + z3_pitch_joint;
-
-  u_joint->x = dozer->position_x + x3_u_joint;
-  u_joint->y = dozer->position_y + y3_u_joint;
-  u_joint->z = dozer->position_z + z3_u_joint;
-
-  blade_edge->x = dozer->position_x + x3_blade_edge;
-  blade_edge->y = dozer->position_y + y3_blade_edge;
-  blade_edge->z = dozer->position_z + z3_blade_edge;
 }
 
 static inline void draw_dozer(SoilEnv* env)
@@ -215,24 +135,33 @@ static inline void draw_dozer(SoilEnv* env)
   float gauge_offset = dozer->track_gauge * 0.5f;
   float track_offset = dozer->track_width * 0.5f;
 
-  render_forward_kinematics(dozer, &pitch_joint, &u_joint, &blade_edge);
-
   // Chassis
   // Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};  // x, y, z
   Vector3 chassis_size = {1.5f, 1.5f, 1.5f};
-  Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z};
+  Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z + 0.75f};
   Vector3 chassis_rot = {dozer->angular_x, dozer->angular_y, dozer->angular_z};
   draw_rectangular_prism(chassis_pos, chassis_rot, chassis_size, yellow);
 
-  // pitch joint
+  // arm lift joint
   Vector3 joint_size = {0.5f, 0.5f, 0.5f};
-  Vector3 pitch_joint_size = {0.5f, 0.5f, 0.5f};
-  Vector3 pitch_joint_rot = {dozer->angular_x, dozer->angular_y + dozer->pos_blade_pitch + dozer->pos_virtual_lift_arm, dozer->angular_z};
+  Vector3 arm_joint_pos = {dozer->_lift_arm_joint_pose[0], dozer->_lift_arm_joint_pose[1], dozer->_lift_arm_joint_pose[2]};
+  Vector3 arm_joint_rot = {dozer->_lift_arm_joint_pose[3], dozer->_lift_arm_joint_pose[4], dozer->_lift_arm_joint_pose[5]};
+  draw_rectangular_prism(arm_joint_pos, arm_joint_rot, joint_size, yellow);
+
+  // pitch joint
+  Vector3 pitch_joint_pos = {dozer->_pitch_joint_pose[0], dozer->_pitch_joint_pose[1], dozer->_pitch_joint_pose[2]};
+  Vector3 pitch_joint_rot = {dozer->_pitch_joint_pose[3], dozer->_pitch_joint_pose[4], dozer->_pitch_joint_pose[5]};
   draw_rectangular_prism(pitch_joint, pitch_joint_rot, joint_size, yellow);
 
   // u_joint
+  Vector3 u_joint_pos = {dozer->_u_joint_pose[0], dozer->_u_joint_pose[1], dozer->_u_joint_pose[2]};
+  Vector3 u_joint_rot = {dozer->_u_joint_pose[3], dozer->_u_joint_pose[4], dozer->_u_joint_pose[5]};
+  draw_rectangular_prism(u_joint_pos, u_joint_rot, joint_size, yellow);
 
   // blade_edge
+  Vector3 blade_edge_pos = {dozer->_blade_edge_pose[0], dozer->_blade_edge_pose[1], dozer->_blade_edge_pose[2]};
+  Vector3 blade_edge_rot = {dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5]};
+  draw_rectangular_prism(blade_edge_pos, blade_edge_rot, joint_size, yellow);
 
 //   draw_rectangular_prism(track_pos_r_local, track_size, global_translation, global_rotation, track_color);
 }
@@ -245,9 +174,9 @@ static inline void render_step(SoilEnv* env)
   float cam_dist = 12.0f;
   float cam_height = 8.0f;
   camera.position = (Vector3){
-    dozer->position_x - cam_dist * cosf(dozer->angular_z),
-    dozer->position_z + cam_height,
-    dozer->position_y - cam_dist * sinf(dozer->angular_z)
+    0, //dozer->position_x - cam_dist * cosf(dozer->angular_z),
+    8, //dozer->position_z + cam_height,
+    0, //dozer->position_y - cam_dist * sinf(dozer->angular_z)
   };
   BeginDrawing();
   ClearBackground(RAYWHITE);

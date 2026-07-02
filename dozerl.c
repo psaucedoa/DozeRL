@@ -60,8 +60,11 @@ void demo(const char* checkpoint_path)
       if (IsKeyDown(KEY_D)) env->actions[1] = 1.0f;
       if (IsKeyDown(KEY_UP)) env->actions[2] = 1.0f;
       if (IsKeyDown(KEY_DOWN)) env->actions[2] = -1.0f;
+      if (IsKeyDown(KEY_LEFT)) env->actions[3] = 1.0f;
+      if (IsKeyDown(KEY_RIGHT)) env->actions[3] = -1.0f;
+      if (IsKeyDown(KEY_Q)) env->actions[4] = -1.0f;
+      if (IsKeyDown(KEY_E)) env->actions[4] = 1.0f;
     }
-
 
     c_step(env);
     c_render(env);
