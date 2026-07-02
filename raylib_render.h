@@ -135,18 +135,24 @@ static inline void draw_dozer(SoilEnv* env)
   float gauge_offset = dozer->track_gauge * 0.5f;
   float track_offset = dozer->track_width * 0.5f;
 
+  Vector3 joint_size = {0.5f, 0.5f, 0.5f};
+
   // Chassis
-  // Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};  // x, y, z
   Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};
-  Vector3 chassis_pos = {dozer->position_x - 0.5f, dozer->position_y, dozer->position_z + 0.75f};
+  Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z};
   Vector3 chassis_rot = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
-  draw_rectangular_prism(chassis_pos, chassis_rot, chassis_size, yellow);
+  draw_rectangular_prism(chassis_pos, chassis_rot, joint_size, yellow);
 
   // arm lift joint
-  Vector3 joint_size = {0.5f, 0.5f, 0.5f};
   Vector3 arm_joint_pos = {dozer->_lift_arm_joint_pose[0], dozer->_lift_arm_joint_pose[1], dozer->_lift_arm_joint_pose[2]};
   Vector3 arm_joint_rot = {dozer->_lift_arm_joint_pose[3], dozer->_lift_arm_joint_pose[4], dozer->_lift_arm_joint_pose[5]};
   draw_rectangular_prism(arm_joint_pos, arm_joint_rot, joint_size, yellow);
+
+  // arm
+  // Vector3 arm_size = {0.5f, 0.5f, 0.5f};
+  // Vector3 arm_joint_pos = {dozer->_lift_arm_joint_pose[0], dozer->_lift_arm_joint_pose[1], dozer->_lift_arm_joint_pose[2]};
+  // Vector3 arm_joint_rot = {dozer->_lift_arm_joint_pose[3], dozer->_lift_arm_joint_pose[4], dozer->_lift_arm_joint_pose[5]};
+  // draw_rectangular_prism(arm_joint_pos, arm_joint_rot, joint_size, yellow);
 
   // pitch joint
   Vector3 pitch_joint_pos = {dozer->_pitch_joint_pose[0], dozer->_pitch_joint_pose[1], dozer->_pitch_joint_pose[2]};
@@ -156,14 +162,14 @@ static inline void draw_dozer(SoilEnv* env)
   // u_joint
   Vector3 u_joint_pos = {dozer->_u_joint_pose[0], dozer->_u_joint_pose[1], dozer->_u_joint_pose[2]};
   Vector3 u_joint_rot = {dozer->_u_joint_pose[3], dozer->_u_joint_pose[4], dozer->_u_joint_pose[5]};
-  draw_rectangular_prism(u_joint_pos, u_joint_rot, joint_size, yellow);
+  Vector3 blade_size = {0.2, dozer->blade_width, dozer->blade_height};
+  draw_rectangular_prism(u_joint_pos, u_joint_rot, blade_size, yellow);
 
   // blade_edge
-  Vector3 blade_edge_pos = {dozer->_blade_edge_pose[0], dozer->_blade_edge_pose[1], dozer->_blade_edge_pose[2]};
-  Vector3 blade_edge_rot = {dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5]};
-  draw_rectangular_prism(blade_edge_pos, blade_edge_rot, joint_size, yellow);
+  // Vector3 blade_edge_pos = {dozer->_blade_edge_pose[0], dozer->_blade_edge_pose[1], dozer->_blade_edge_pose[2]};
+  // Vector3 blade_edge_rot = {dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5]};
+  // draw_rectangular_prism(blade_edge_pos, blade_edge_rot, joint_size, yellow);
 
-//   draw_rectangular_prism(track_pos_r_local, track_size, global_translation, global_rotation, track_color);
 }
 
 static inline void render_step(SoilEnv* env)
