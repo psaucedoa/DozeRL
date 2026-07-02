@@ -500,75 +500,134 @@ static inline void forward_kinematics(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // Local coordinates of the blade joint relative to chassis origin
   float theta_arm = dozer->pos_virtual_lift_arm;
   float theta_pitch = dozer->pos_blade_pitch;
   float theta_rake = dozer->blade_mount_pitch;
 
-  float lift_arm_joint[6];
-  lift_arm_joint[0] = dozer->arm_pivot_x;  // x
-  lift_arm_joint[1] = 0;                   // y
-  lift_arm_joint[2] = dozer->arm_pivot_z;  // z
-  lift_arm_joint[3] = 0;                            // roll - no control
-  lift_arm_joint[4] = -theta_arm;                  // pitch (right-handed: negative for upward pitch)
-  lift_arm_joint[5] = 0;                            // yaw - no control
+  // 1. Lift arm joint (local in chassis frame)
+  float q_arm_local[4];
+  euler_to_quat(0.0f, -theta_arm, 0.0f, q_arm_local);
 
-  float pitch_joint[6];
-  pitch_joint[0] = lift_arm_joint[0] + dozer->arm_length * cosf(theta_arm);  // x
-  pitch_joint[1] = lift_arm_joint[1];                                        // y
-  pitch_joint[2] = lift_arm_joint[2] + dozer->arm_length * sinf(theta_arm);  // z
-  pitch_joint[3] = 0;                                           // roll - no control
-  pitch_joint[4] = lift_arm_joint[4] - dozer->pos_blade_pitch;  // pitch (right-handed: -theta_arm - theta_pitch)
-  pitch_joint[5] = 0;                                           // yaw - no control
+  float lift_arm_local_pos[3] = {dozer->arm_pivot_x, 0.0f, dozer->arm_pivot_z};
 
-  float u_joint[6];
-  u_joint[0] = pitch_joint[0] + dozer->pitch_length * cosf(theta_arm + theta_pitch);
-  u_joint[1] = pitch_joint[1];
-  u_joint[2] = pitch_joint[2] + dozer->pitch_length * sinf(theta_arm + theta_pitch);
-  u_joint[3] = dozer->pos_blade_roll;
-  u_joint[4] = pitch_joint[4];
-  u_joint[5] = dozer->pos_blade_yaw;
+  // 2. Pitch joint (local in chassis frame)
+  float arm_vector[3] = {dozer->arm_length, 0.0f, 0.0f};
+  float arm_offset[3];
+  quat_rotate(q_arm_local, arm_vector, arm_offset);
 
-  // Compute blade edge offset in u_joint frame
-  float blade_edge[6] = {0.0f, 0.0f, dozer->blade_height * -0.5f, 0.0f, 0.0f, 0.0f};
-  float blade_rot[3] = {dozer->pos_blade_roll, -(theta_arm + theta_pitch + theta_rake), dozer->pos_blade_yaw};
-  rotate(blade_edge, blade_rot);
-  
-  blade_edge[0] += u_joint[0];
-  blade_edge[1] += u_joint[1];
-  blade_edge[2] += u_joint[2];
-  blade_edge[3] = dozer->pos_blade_roll;
-  blade_edge[4] = -(theta_arm + theta_pitch + theta_rake);
-  blade_edge[5] = dozer->pos_blade_yaw;
+  float pitch_joint_local_pos[3] = {
+    lift_arm_local_pos[0] + arm_offset[0],
+    lift_arm_local_pos[1] + arm_offset[1],
+    lift_arm_local_pos[2] + arm_offset[2]
+  };
 
-  // Apply chassis rotation to joints
-  float rotations[3] = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
-  float translation[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
+  float q_pitch_rel[4];
+  euler_to_quat(0.0f, -theta_pitch, 0.0f, q_pitch_rel);
 
-  // lift arm
-  rotate(lift_arm_joint, rotations);  // apply rotation
-  translate(lift_arm_joint, translation);  // apply translation
-  memcpy(dozer->_lift_arm_joint_pose, lift_arm_joint, 6*sizeof(float));  // copy to main struct
+  float q_pitch_local[4];
+  quat_multiply(q_arm_local, q_pitch_rel, q_pitch_local);
 
-  // pitch_joint
-  rotate(pitch_joint, rotations);  // apply rotation
-  translate(pitch_joint, translation);  // apply translation
-  memcpy(dozer->_pitch_joint_pose, pitch_joint, 6*sizeof(float));  // copy to main struct
+  // 3. Universal joint (local in chassis frame)
+  float pitch_vector[3] = {dozer->pitch_length, 0.0f, 0.0f};
+  float pitch_offset[3];
+  quat_rotate(q_pitch_local, pitch_vector, pitch_offset);
 
-  // u_joint
-  rotate(u_joint, rotations);  // apply rotation
-  translate(u_joint, translation);  // apply translation
-  memcpy(dozer->_u_joint_pose, u_joint, 6*sizeof(float));  // copy to main struct
+  float u_joint_local_pos[3] = {
+    pitch_joint_local_pos[0] + pitch_offset[0],
+    pitch_joint_local_pos[1] + pitch_offset[1],
+    pitch_joint_local_pos[2] + pitch_offset[2]
+  };
 
-  // blade_edge
-  rotate(blade_edge, rotations);  // apply rotation
-  translate(blade_edge, translation);  // apply translation
-  memcpy(dozer->_blade_edge_pose, blade_edge, 6*sizeof(float));  // copy to main struct
+  float q_u_joint_rel[4];
+  euler_to_quat(dozer->pos_blade_roll, 0.0f, dozer->pos_blade_yaw, q_u_joint_rel);
 
-  // get global blade edge coordinates
-  dozer->blade_x = blade_edge[0];
-  dozer->blade_y = blade_edge[1];
-  dozer->blade_z = blade_edge[2];
+  float q_u_joint_local[4];
+  quat_multiply(q_pitch_local, q_u_joint_rel, q_u_joint_local);
+
+  // 4. Blade edge (local in chassis frame)
+  float q_blade_rel[4];
+  euler_to_quat(dozer->pos_blade_roll, -theta_rake, dozer->pos_blade_yaw, q_blade_rel);
+
+  float q_blade_local[4];
+  quat_multiply(q_pitch_local, q_blade_rel, q_blade_local);
+
+  float blade_edge_vector[3] = {0.0f, 0.0f, dozer->blade_height * -0.5f};
+  float blade_edge_offset[3];
+  quat_rotate(q_blade_local, blade_edge_vector, blade_edge_offset);
+
+  float blade_edge_local_pos[3] = {
+    u_joint_local_pos[0] + blade_edge_offset[0],
+    u_joint_local_pos[1] + blade_edge_offset[1],
+    u_joint_local_pos[2] + blade_edge_offset[2]
+  };
+
+  // 5. Transform all joints from chassis local frame to world frame using dozer->q
+  float chassis_pos[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
+
+  // Lift arm joint world pose
+  float lift_arm_world_pos[3];
+  quat_rotate(dozer->q, lift_arm_local_pos, lift_arm_world_pos);
+  dozer->_lift_arm_joint_pose[0] = lift_arm_world_pos[0] + chassis_pos[0];
+  dozer->_lift_arm_joint_pose[1] = lift_arm_world_pos[1] + chassis_pos[1];
+  dozer->_lift_arm_joint_pose[2] = lift_arm_world_pos[2] + chassis_pos[2];
+
+  float q_arm_world[4];
+  quat_multiply(dozer->q, q_arm_local, q_arm_world);
+  float rpy_arm[3];
+  quat_to_euler(q_arm_world, rpy_arm);
+  dozer->_lift_arm_joint_pose[3] = rpy_arm[0];
+  dozer->_lift_arm_joint_pose[4] = rpy_arm[1];
+  dozer->_lift_arm_joint_pose[5] = rpy_arm[2];
+
+  // Pitch joint world pose
+  float pitch_joint_world_pos[3];
+  quat_rotate(dozer->q, pitch_joint_local_pos, pitch_joint_world_pos);
+  dozer->_pitch_joint_pose[0] = pitch_joint_world_pos[0] + chassis_pos[0];
+  dozer->_pitch_joint_pose[1] = pitch_joint_world_pos[1] + chassis_pos[1];
+  dozer->_pitch_joint_pose[2] = pitch_joint_world_pos[2] + chassis_pos[2];
+
+  float q_pitch_world[4];
+  quat_multiply(dozer->q, q_pitch_local, q_pitch_world);
+  float rpy_pitch[3];
+  quat_to_euler(q_pitch_world, rpy_pitch);
+  dozer->_pitch_joint_pose[3] = rpy_pitch[0];
+  dozer->_pitch_joint_pose[4] = rpy_pitch[1];
+  dozer->_pitch_joint_pose[5] = rpy_pitch[2];
+
+  // U-joint world pose
+  float u_joint_world_pos[3];
+  quat_rotate(dozer->q, u_joint_local_pos, u_joint_world_pos);
+  dozer->_u_joint_pose[0] = u_joint_world_pos[0] + chassis_pos[0];
+  dozer->_u_joint_pose[1] = u_joint_world_pos[1] + chassis_pos[1];
+  dozer->_u_joint_pose[2] = u_joint_world_pos[2] + chassis_pos[2];
+
+  float q_u_joint_world[4];
+  quat_multiply(dozer->q, q_u_joint_local, q_u_joint_world);
+  float rpy_u_joint[3];
+  quat_to_euler(q_u_joint_world, rpy_u_joint);
+  dozer->_u_joint_pose[3] = rpy_u_joint[0];
+  dozer->_u_joint_pose[4] = rpy_u_joint[1];
+  dozer->_u_joint_pose[5] = rpy_u_joint[2];
+
+  // Blade edge world pose
+  float blade_edge_world_pos[3];
+  quat_rotate(dozer->q, blade_edge_local_pos, blade_edge_world_pos);
+  dozer->_blade_edge_pose[0] = blade_edge_world_pos[0] + chassis_pos[0];
+  dozer->_blade_edge_pose[1] = blade_edge_world_pos[1] + chassis_pos[1];
+  dozer->_blade_edge_pose[2] = blade_edge_world_pos[2] + chassis_pos[2];
+
+  float q_blade_world[4];
+  quat_multiply(dozer->q, q_blade_local, q_blade_world);
+  float rpy_blade[3];
+  quat_to_euler(q_blade_world, rpy_blade);
+  dozer->_blade_edge_pose[3] = rpy_blade[0];
+  dozer->_blade_edge_pose[4] = rpy_blade[1];
+  dozer->_blade_edge_pose[5] = rpy_blade[2];
+
+  // Get global blade edge coordinates
+  dozer->blade_x = dozer->_blade_edge_pose[0];
+  dozer->blade_y = dozer->_blade_edge_pose[1];
+  dozer->blade_z = dozer->_blade_edge_pose[2];
 }
 
 static inline void update_kinematics(SoilEnv* env)
