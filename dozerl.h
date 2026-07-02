@@ -764,8 +764,8 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   float f_net = f_push;
   float actual_f_resist = 0.0f;
 
-  // Passive soil resistance only opposes forward motion/effort. It cannot push the dozer backward.
-  if (f_push >= 0.0f) {
+  // Passive soil resistance ALWAYS opposes the direction of motion/effort.
+  if (f_push > 0.0f || (f_push == 0.0f && dozer->twist_linear_x > 0.01f)) {
       if (f_resist > f_push) {
           actual_f_resist = f_push;
           f_net = 0.0f; // Stall
@@ -775,6 +775,17 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
       } else {
           actual_f_resist = f_resist;
           f_net = f_push - f_resist;
+      }
+  } else if (f_push < 0.0f || (f_push == 0.0f && dozer->twist_linear_x < -0.01f)) {
+      if (f_resist > fabsf(f_push)) {
+          actual_f_resist = fabsf(f_push);
+          f_net = 0.0f; // Stall
+          if (dozer->twist_linear_x < 0.0f) {
+              dozer->twist_linear_x = 0.0f;
+          }
+      } else {
+          actual_f_resist = f_resist;
+          f_net = f_push + f_resist; // f_push is negative, f_resist is positive, so addition reduces magnitude
       }
   }
 
@@ -903,8 +914,16 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   // Direction of the blade's forward vector projected on the horizontal (X-Y) plane
   float x_denom = sqrtf(x_axis_world[0] * x_axis_world[0] + x_axis_world[1] * x_axis_world[1]);
   if (x_denom < 1e-6f) x_denom = 1e-6f;
-  float fwd_dir_x = x_axis_world[0] / x_denom;
-  float fwd_dir_y = x_axis_world[1] / x_denom;
+  
+  float push_sign = 1.0f;
+  if (dozer->twist_linear_x < -0.01f) {
+      push_sign = -1.0f;
+  } else if (dozer->effort_linear < -0.01f && fabsf(dozer->twist_linear_x) <= 0.01f) {
+      push_sign = -1.0f;
+  }
+
+  float fwd_dir_x = (x_axis_world[0] / x_denom) * push_sign;
+  float fwd_dir_y = (x_axis_world[1] / x_denom) * push_sign;
 
   // Effective width of blade per intersected cell to conserve mass/force geometry.
   float effective_width = CELL_SIZE / fmaxf(fabsf(fwd_dir_x), fabsf(fwd_dir_y));
@@ -978,7 +997,7 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
 
         float df = calculate_FEE_column(env, f_hard_depth, f_total_depth, effective_width);
         total_force += df;
-        total_yaw_moment += df * local_y; 
+        total_yaw_moment += df * local_y * push_sign; 
         total_roll_moment += df * local_y; 
       }
     }
