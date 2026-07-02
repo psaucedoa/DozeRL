@@ -139,7 +139,7 @@ static inline void draw_dozer(SoilEnv* env)
   // Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};  // x, y, z
   Vector3 chassis_size = {1.5f, 1.5f, 1.5f};
   Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z + 0.75f};
-  Vector3 chassis_rot = {dozer->angular_x, dozer->angular_y, dozer->angular_z};
+  Vector3 chassis_rot = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
   draw_rectangular_prism(chassis_pos, chassis_rot, chassis_size, yellow);
 
   // arm lift joint
