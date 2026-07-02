@@ -29,9 +29,9 @@ static inline void set_hard_soil_color(float h)
 
 static inline void set_loose_soil_color(float h)
 {
-  unsigned char r = (unsigned char)(70.0f + h * 20.0f);
-  unsigned char g = (unsigned char)(40.0f + h * 20.0f);
-  unsigned char b = (unsigned char)(20.0f + h * 20.0f);
+  unsigned char r = (unsigned char)(70.0f + h * 30.0f);
+  unsigned char g = (unsigned char)(40.0f + h * 30.0f);
+  unsigned char b = (unsigned char)(20.0f + h * 30.0f);
   rlColor4ub(r, g, b, 255);
 }
 
@@ -137,8 +137,8 @@ static inline void draw_dozer(SoilEnv* env)
 
   // Chassis
   // Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};  // x, y, z
-  Vector3 chassis_size = {1.5f, 1.5f, 1.5f};
-  Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z + 0.75f};
+  Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};
+  Vector3 chassis_pos = {dozer->position_x - 0.5f, dozer->position_y, dozer->position_z + 0.75f};
   Vector3 chassis_rot = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
   draw_rectangular_prism(chassis_pos, chassis_rot, chassis_size, yellow);
 

@@ -136,7 +136,7 @@ typedef struct
   float last_roll_moment; // (N*m)
 
   // Actuator Dynamics Constants
-  float max_torque_list_arm;
+  float max_torque_lift_arm;
   float max_torque_pitch;
   float max_torque_roll;
   float max_torque_rotational;
@@ -665,8 +665,8 @@ static inline void update_kinematics(SoilEnv* env)
     {
       for (int j = min_j; j <= max_j; j++)
       {
-        float dx = (i * CELL_SIZE) - dozer->position_x;
-        float dy = (j * CELL_SIZE) - dozer->position_y;
+        float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
+        float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
         float local_x = dx * cos_y + dy * sin_y;
         float local_y = -dx * sin_y + dy * cos_y;
 
@@ -712,8 +712,8 @@ static inline void update_kinematics(SoilEnv* env)
         for (int j = min_j; j <= max_j; j++)
         {
           if (env->grid_L[i][j] < 0.001f) continue;
-          float dx = (i * CELL_SIZE) - dozer->position_x;
-          float dy = (j * CELL_SIZE) - dozer->position_y;
+          float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
+          float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
           float local_x = dx * cos_y + dy * sin_y;
           float local_y = -dx * sin_y + dy * cos_y;
 
@@ -916,8 +916,8 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       }
 
       // Calculate the moment arm (local_y) and blade elevation at this specific grid cell
-      float cell_m_x = x0 * CELL_SIZE;
-      float cell_m_y = y0 * CELL_SIZE;
+      float cell_m_x = (x0 + 0.5f) * CELL_SIZE;
+      float cell_m_y = (y0 + 0.5f) * CELL_SIZE;
       float dx = cell_m_x - dozer->blade_x;
       float dy = cell_m_y - dozer->blade_y;
 
@@ -989,8 +989,8 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       int cy = visited_y[s];
 
       // Push dirt forward 1 cell length in the direction of blade forward travel
-      float dep_global_x = cx * CELL_SIZE + CELL_SIZE * fwd_dir_x;
-      float dep_global_y = cy * CELL_SIZE + CELL_SIZE * fwd_dir_y;
+      float dep_global_x = (cx + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_x;
+      float dep_global_y = (cy + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_y;
 
       int dep_x = (int)(dep_global_x / CELL_SIZE);
       int dep_y = (int)(dep_global_y / CELL_SIZE);
@@ -1017,7 +1017,7 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
     arm_total_extern_torque *= (1.0f - dozer->hydraulic_stiffness);
   }
 
-  dozer->vel_virtual_lift_arm = (dozer->vel_virtual_lift_arm + ((dozer->effort_lift * dozer->max_torque_list_arm + arm_total_extern_torque) / dozer->arm_inertia) * dt) / (1.0f + (dozer->virtual_lift_arm_damping / dozer->arm_inertia) * dt);
+  dozer->vel_virtual_lift_arm = (dozer->vel_virtual_lift_arm + ((dozer->effort_lift * dozer->max_torque_lift_arm + arm_total_extern_torque) / dozer->arm_inertia) * dt) / (1.0f + (dozer->virtual_lift_arm_damping / dozer->arm_inertia) * dt);
 
   float PITCH_LINK_CG = 0.75f;
   float pitch_gravity_torque = dozer->pitch_mass * GRAVITY * dozer->pitch_length * PITCH_LINK_CG * cosf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch);
@@ -1073,6 +1073,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
   float tan_phi = tanf(env->soil_phi);
 
   float temp_L[GRID_SIZE][GRID_SIZE];  // hoisted outside loop to prevent repeated stack allocations
+  float delta_L[GRID_SIZE][GRID_SIZE]; // Array to accumulate symmetric slumping changes
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
 
@@ -1083,6 +1084,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
       for (int j = min_j; j <= max_j; j++)
       {
         temp_L[i][j] = env->grid_L[i][j];
+        delta_L[i][j] = 0.0f;
       }
     }
 
@@ -1093,15 +1095,15 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
     {
       for (int j = min_j + 1; j < max_j; j++)
       {
-        if (env->grid_L[i][j] <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
-        float total_h = env->grid_H[i][j] + env->grid_L[i][j];  // get total height at this pixel
+        if (temp_L[i][j] <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
+        float total_h = env->grid_H[i][j] + temp_L[i][j];  // get total height at this pixel
 
         for(int d=0; d<8; d++)  // look through the 8 surrounding pixels
         {
           int ni = i + dx[d], nj = j + dy[d];  // get the surrounding pixel index relative to the current pixel
 
-          float cell_x = ni * CELL_SIZE;  // get the surrounding pixel diff location in meters
-          float cell_y = nj * CELL_SIZE;
+          float cell_x = (ni + 0.5f) * CELL_SIZE;  // get the surrounding pixel diff location in meters
+          float cell_y = (nj + 0.5f) * CELL_SIZE;
 
           float dx_cell = cell_x - dozer->blade_x;
           float dy_cell = cell_y - dozer->blade_y;
@@ -1113,7 +1115,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
             if (local_x >= -loader_length && local_x <= 0.0f) continue; // prevent soil falling into the dozer
           }
 
-          float neighbor_total_h = env->grid_H[ni][nj] + env->grid_L[ni][nj];  // get total height of surrounding pixel
+          float neighbor_total_h = env->grid_H[ni][nj] + temp_L[ni][nj];  // get total height of surrounding pixel
           float dH = total_h - neighbor_total_h;
           float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f);  // if surrounding pixel is diagnoal, mult by sqrt(2)
 
@@ -1141,20 +1143,23 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
             if (t > t_limit)
             {
               float slip = (t - t_limit) * dist * 0.2f;
-              if (slip > temp_L[i][j]) slip = temp_L[i][j];
-              temp_L[i][j] -= slip;
-              temp_L[ni][nj] += slip;
-              total_h -= slip;
+              // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
+              if (slip > temp_L[i][j] / 8.0f) slip = temp_L[i][j] / 8.0f;
+              delta_L[i][j] -= slip;
+              delta_L[ni][nj] += slip;
+              // We DO NOT update total_h or temp_L here to maintain symmetry
             }
           }
         }
       }
     }
+    
     for (int i = min_i; i <= max_i; i++)
     {
       for (int j = min_j; j <= max_j; j++)
       {
-        env->grid_L[i][j] = temp_L[i][j];
+        env->grid_L[i][j] += delta_L[i][j];
+        if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f; // Prevent negative loose soil
       }
     }
   }
@@ -1177,8 +1182,27 @@ static inline void update_surcharge(SoilEnv* env)
 
   float current_surcharge_vol = 0.0f;
 
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
+  float q_blade[4];
+  euler_to_quat(dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5], q_blade);
+
+  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
+  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
+  float x_axis_world[3];
+  float y_axis_world[3];
+  quat_rotate(q_blade, x_axis_local, x_axis_world);
+  quat_rotate(q_blade, y_axis_local, y_axis_world);
+
+  // Normalize x_axis_world and y_axis_world on the XY plane for horizontal distance checks
+  float x_len = sqrtf(x_axis_world[0]*x_axis_world[0] + x_axis_world[1]*x_axis_world[1]);
+  float y_len = sqrtf(y_axis_world[0]*y_axis_world[0] + y_axis_world[1]*y_axis_world[1]);
+  if (x_len < 1e-6f) x_len = 1e-6f;
+  if (y_len < 1e-6f) y_len = 1e-6f;
+  
+  float fwd_x = x_axis_world[0] / x_len;
+  float fwd_y = x_axis_world[1] / x_len;
+  float left_x = y_axis_world[0] / y_len;
+  float left_y = y_axis_world[1] / y_len;
+
   float half_width = dozer->blade_width / 2.0f;
   float lookahead = 1.5f;
   float cell_area = CELL_SIZE * CELL_SIZE;
@@ -1189,15 +1213,15 @@ static inline void update_surcharge(SoilEnv* env)
     {
       if (env->grid_L[i][j] <= 0.0f) continue;
 
-      float cell_x = i * CELL_SIZE;
-      float cell_y = j * CELL_SIZE;
+      float cell_x = (i + 0.5f) * CELL_SIZE;
+      float cell_y = (j + 0.5f) * CELL_SIZE;
 
       float dx = cell_x - dozer->blade_x;
       float dy = cell_y - dozer->blade_y;
 
-      // Transform cell coordinates into the blade's local frame
-      float local_x = dx * cos_y + dy * sin_y;
-      float local_y = -dx * sin_y + dy * cos_y;
+      // Transform cell coordinates into the blade's local horizontal frame
+      float local_x = dx * fwd_x + dy * fwd_y;
+      float local_y = dx * left_x + dy * left_y;
 
       // Check if the cell is inside the 1.5m box directly in front of the blade
       if (local_x >= 0.0f && local_x <= lookahead && fabsf(local_y) <= half_width)
@@ -1262,11 +1286,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->blade_width = 1.85f;
   dozer->blade_height = 0.76f;
   dozer->blade_rake_angle = 30.0f * M_PI / 180.0f;
-  dozer->max_force_linear = 100000.0f;
-  dozer->max_force_rotational = 80000.0f;
-  dozer->max_torque_pitch = 15000.0f;
-  dozer->max_torque_roll = 15000.0f;
-  dozer->max_torque_list_arm = 100000.0f;
+  dozer->max_force_linear = 25000.0f;
+  dozer->max_force_rotational = 8000.0f;
+  dozer->max_torque_pitch = 3000.0f;
+  dozer->max_torque_roll = 1500.0f;
+  dozer->max_torque_lift_arm = 5000.0f;
   dozer->arm_mass = 490.0f;
   dozer->pitch_mass = 100.0f;
   dozer->arm_inertia = 7000.0f;
@@ -1283,7 +1307,7 @@ static inline void env_reset(SoilEnv* env)
   dozer->pos_blade_pitch_max = 0.5f;
   dozer->pos_blade_roll_min = -0.5f;
   dozer->pos_blade_roll_max = 0.5f;
-  
+
   dozer->arm_length = 3.8f;
   dozer->arm_pivot_x = -2.2f;
   dozer->arm_pivot_z = 1.8987f;
@@ -1334,7 +1358,7 @@ void c_step(SoilEnv* env)
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
 
-  simulate_step(env, 0.05f);
+  simulate_step(env, 0.167f);
 
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
