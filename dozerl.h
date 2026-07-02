@@ -62,6 +62,7 @@ typedef struct
   float twist_linear_x;   // (m/s)   Dozer linear velocity about X axis
   float twist_linear_y;   // (m/s)   Dozer linear velocity about Y axis
   float twist_linear_z;   // (m/s)   Dozer linear velocity about Z axis
+  float q[4];             // [w, x, y, z] quaternion orientation of the chassis
 
   // Effort Inputs (-1.0 to 1.0)
   float effort_lift;        // efort
@@ -490,6 +491,9 @@ static inline void update_chassis_pose(SoilEnv* env)
   dozer->position_z = (sum_height_left + sum_height_right) / (2.0f * num_samples);
   dozer->angular_y = (atan2f(sum_moment_left / sum_length_squared, 1.0f) + atan2f(sum_moment_right / sum_length_squared, 1.0f)) / 2.0f; // Pitch
   dozer->angular_x = atan2f((sum_height_left - sum_height_right) / num_samples, dozer->track_gauge); // Roll
+
+  // Keep chassis orientation quaternion updated
+  euler_to_quat(dozer->angular_x, -dozer->angular_y, dozer->angular_z, dozer->q);
 }
 
 static inline void forward_kinematics(SoilEnv* env)
@@ -736,9 +740,38 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
 static inline void update_chassis_2d_position(SoilEnv* env, float dt)
 {
   Dozer * dozer = &env->dozer;
-  dozer->angular_z += dozer->twist_angular_z * dt;
-  dozer->position_x += dozer->twist_linear_x * cosf(dozer->angular_z) * dt;
-  dozer->position_y += dozer->twist_linear_x * sinf(dozer->angular_z) * dt;
+
+  // 1. Update orientation quaternion by integrating local angular velocity around Z axis
+  float theta = dozer->twist_angular_z * dt;
+  float q_rot[4] = {cosf(theta * 0.5f), 0.0f, 0.0f, sinf(theta * 0.5f)};
+  
+  float q_new[4];
+  quat_multiply(dozer->q, q_rot, q_new);
+  
+  // Normalize the quaternion
+  float len = sqrtf(q_new[0]*q_new[0] + q_new[1]*q_new[1] + q_new[2]*q_new[2] + q_new[3]*q_new[3]);
+  if (len > 1e-6f)
+  {
+    dozer->q[0] = q_new[0] / len;
+    dozer->q[1] = q_new[1] / len;
+    dozer->q[2] = q_new[2] / len;
+    dozer->q[3] = q_new[3] / len;
+  }
+
+  // 2. Rotate local velocity [twist_linear_x, 0, 0] to world frame using chassis quaternion
+  float v_local[3] = {dozer->twist_linear_x, 0.0f, 0.0f};
+  float v_world[3];
+  quat_rotate(dozer->q, v_local, v_world);
+
+  dozer->position_x += v_world[0] * dt;
+  dozer->position_y += v_world[1] * dt;
+  
+  // 3. Keep Euler angles in sync for logging/rendering/coordinate projection
+  float rpy[3];
+  quat_to_euler(dozer->q, rpy);
+  dozer->angular_x = rpy[0];
+  dozer->angular_y = -rpy[1]; // pitch is negative for nose-up in right-handed coordinates
+  dozer->angular_z = rpy[2];
 }
 
 static inline float calculate_FEE_column(SoilEnv* env, float hard_depth, float total_depth, float width)
@@ -766,22 +799,27 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   float total_roll_moment = 0.0f;
   float total_vol_cut = 0.0f;
 
-  // precalculate some trigs
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
-
-  float total_roll = dozer->angular_x + dozer->pos_blade_roll;
-  float sin_total_roll = sinf(total_roll);
-
-  // Bresenham's Line Algorithm to discretize blade over the grid
-  // 1. Find start and end coordinates of the blade in meters
   float half_w = dozer->blade_width / 2.0f;
-  float start_m_x = dozer->blade_x - (-half_w) * sin_y; // Left edge
-  float start_m_y = dozer->blade_y + (-half_w) * cos_y;
-  float end_m_x = dozer->blade_x - (half_w) * sin_y;   // Right edge
-  float end_m_y = dozer->blade_y + (half_w) * cos_y;
 
-  // 2. Convert to grid indices
+  // 1. Get blade orientation quaternion
+  float q_blade[4];
+  euler_to_quat(dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5], q_blade);
+
+  // 2. Compute unit vectors of the blade frame in the world frame
+  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
+  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
+  float x_axis_world[3];
+  float y_axis_world[3];
+  quat_rotate(q_blade, x_axis_local, x_axis_world);
+  quat_rotate(q_blade, y_axis_local, y_axis_world);
+
+  // Find start (left) and end (right) coordinates of the blade in meters
+  float start_m_x = dozer->blade_x + y_axis_world[0] * half_w;
+  float start_m_y = dozer->blade_y + y_axis_world[1] * half_w;
+  float end_m_x = dozer->blade_x - y_axis_world[0] * half_w;
+  float end_m_y = dozer->blade_y - y_axis_world[1] * half_w;
+
+  // 3. Convert to grid indices
   int x0 = (int)(start_m_x / CELL_SIZE);
   int y0 = (int)(start_m_y / CELL_SIZE);
   int x1 = (int)(end_m_x / CELL_SIZE);
@@ -793,9 +831,14 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   int sy = (y0 < y1) ? 1 : -1;
   int err = dx_i - dy_i;
 
+  // Direction of the blade's forward vector projected on the horizontal (X-Y) plane
+  float x_denom = sqrtf(x_axis_world[0] * x_axis_world[0] + x_axis_world[1] * x_axis_world[1]);
+  if (x_denom < 1e-6f) x_denom = 1e-6f;
+  float fwd_dir_x = x_axis_world[0] / x_denom;
+  float fwd_dir_y = x_axis_world[1] / x_denom;
+
   // Effective width of blade per intersected cell to conserve mass/force geometry.
-  // When diagonal, this properly scales up to CELL_SIZE * sqrt(2) to prevent force loss.
-  float effective_width = CELL_SIZE / fmaxf(fabsf(cos_y), fabsf(sin_y));
+  float effective_width = CELL_SIZE / fmaxf(fabsf(fwd_dir_x), fabsf(fwd_dir_y));
 
   // Arrays to store exactly which cells we visited to deposit cut volume later
   int visited_x[100];
@@ -818,9 +861,14 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       float cell_m_y = y0 * CELL_SIZE;
       float dx = cell_m_x - dozer->blade_x;
       float dy = cell_m_y - dozer->blade_y;
-      float local_y = -dx * sin_y + dy * cos_y;
 
-      float section_blade_z = dozer->blade_z + local_y * sin_total_roll;
+      // Project the offset onto the 2D projected y_axis_world
+      float denom = y_axis_world[0] * y_axis_world[0] + y_axis_world[1] * y_axis_world[1];
+      if (denom < 1e-6f) denom = 1e-6f;
+      float local_y = (dx * y_axis_world[0] + dy * y_axis_world[1]) / denom;
+
+      // The exact 3D height of the blade at this lateral position
+      float section_blade_z = dozer->blade_z + local_y * y_axis_world[2];
 
       // 3. Cut the soil (remove from heightmap, convert to loose)
       float total_h = env->grid_H[x0][y0] + env->grid_L[x0][y0];
@@ -843,8 +891,8 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       }
 
       // 4. Calculate FEE force on the unyielding soil 1 cell directly in front
-      float front_x = cell_m_x + CELL_SIZE * cos_y;
-      float front_y = cell_m_y + CELL_SIZE * sin_y;
+      float front_x = cell_m_x + CELL_SIZE * fwd_dir_x;
+      float front_y = cell_m_y + CELL_SIZE * fwd_dir_y;
       int f_grid_x = (int)(front_x / CELL_SIZE);
       int f_grid_y = (int)(front_y / CELL_SIZE);
 
@@ -881,9 +929,9 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       int cx = visited_x[s];
       int cy = visited_y[s];
 
-      // Push dirt forward 1 cell length in the direction of travel
-      float dep_global_x = cx * CELL_SIZE + CELL_SIZE * cos_y;
-      float dep_global_y = cy * CELL_SIZE + CELL_SIZE * sin_y;
+      // Push dirt forward 1 cell length in the direction of blade forward travel
+      float dep_global_x = cx * CELL_SIZE + CELL_SIZE * fwd_dir_x;
+      float dep_global_y = cy * CELL_SIZE + CELL_SIZE * fwd_dir_y;
 
       int dep_x = (int)(dep_global_x / CELL_SIZE);
       int dep_y = (int)(dep_global_y / CELL_SIZE);
@@ -1186,6 +1234,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_z = 1.0f;
+
+  dozer->q[0] = 1.0f;
+  dozer->q[1] = 0.0f;
+  dozer->q[2] = 0.0f;
+  dozer->q[3] = 0.0f;
 
   for(int i = 0; i < GRID_SIZE; i++) {
     for(int j = 0; j < GRID_SIZE; j++) {
