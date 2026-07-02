@@ -762,15 +762,18 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   if (f_hyd_total < 0) f_push = -f_push;
 
   float f_net = f_push;
+  float actual_f_resist = 0.0f;
 
   // Passive soil resistance only opposes forward motion/effort. It cannot push the dozer backward.
   if (f_push >= 0.0f) {
       if (f_resist > f_push) {
+          actual_f_resist = f_push;
           f_net = 0.0f; // Stall
           if (dozer->twist_linear_x > 0.0f) {
               dozer->twist_linear_x = 0.0f;
           }
       } else {
+          actual_f_resist = f_resist;
           f_net = f_push - f_resist;
       }
   }
@@ -792,7 +795,13 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
       dozer->vel_tracks_linear = dozer->twist_linear_x;
     }
 
-  dozer->twist_angular_z += ((dozer->effort_rotational * dozer->max_force_rotational) / dozer->machine_inertia) * dt;
+  float actual_yaw_moment = 0.0f;
+  if (f_resist > 0.001f) {
+      actual_yaw_moment = dozer->last_yaw_moment * (actual_f_resist / f_resist);
+  }
+
+  float torque_net = (dozer->effort_rotational * dozer->max_force_rotational) + actual_yaw_moment;
+  dozer->twist_angular_z += (torque_net / dozer->machine_inertia) * dt;
   dozer->twist_angular_z *= (1.0f - dozer->track_damping * dt);
 }
 
