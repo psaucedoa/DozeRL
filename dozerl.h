@@ -849,6 +849,7 @@ static inline float calculate_FEE_column(SoilEnv* env, float hard_depth, float t
   return df;
 }
 
+
 static inline void interact_with_soil(SoilEnv* env, float dt)
 {
   Dozer * dozer = &env->dozer;
@@ -899,22 +900,16 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   // Effective width of blade per intersected cell to conserve mass/force geometry.
   float effective_width = CELL_SIZE / fmaxf(fabsf(fwd_dir_x), fabsf(fwd_dir_y));
 
-  // Arrays to store exactly which cells we visited to deposit cut volume later
+  // Arrays to store exactly which cells we visited and how much we cut
   int visited_x[100];
   int visited_y[100];
+  float cut_vol[100];
   int num_cells = 0;
 
   while (1)
   {
     if (x0 >= 0 && x0 < GRID_SIZE && y0 >= 0 && y0 < GRID_SIZE)
     {
-      if (num_cells < 100)
-      {
-        visited_x[num_cells] = x0;
-        visited_y[num_cells] = y0;
-        num_cells++;
-      }
-
       // Calculate the moment arm (local_y) and blade elevation at this specific grid cell
       float cell_m_x = (x0 + 0.5f) * CELL_SIZE;
       float cell_m_y = (y0 + 0.5f) * CELL_SIZE;
@@ -932,6 +927,7 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       // 3. Cut the soil (remove from heightmap, convert to loose)
       float total_h = env->grid_H[x0][y0] + env->grid_L[x0][y0];
       float depth = total_h - section_blade_z;
+      float cell_cut_vol = 0.0f;
 
       if (depth > 0.0f)
       {
@@ -940,13 +936,23 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
           float l_cut = (depth < env->grid_L[x0][y0]) ? depth : env->grid_L[x0][y0];
           env->grid_L[x0][y0] -= l_cut; 
           depth -= l_cut; 
-          total_vol_cut += l_cut * CELL_SIZE * CELL_SIZE;
+          cell_cut_vol += l_cut * CELL_SIZE * CELL_SIZE;
         }
         if (depth > 0.0f)
         {
           env->grid_H[x0][y0] -= depth; 
-          total_vol_cut += depth * CELL_SIZE * CELL_SIZE * env->swell_ratio;
+          cell_cut_vol += depth * CELL_SIZE * CELL_SIZE * env->swell_ratio;
         }
+      }
+
+      total_vol_cut += cell_cut_vol;
+
+      if (num_cells < 100)
+      {
+        visited_x[num_cells] = x0;
+        visited_y[num_cells] = y0;
+        cut_vol[num_cells] = cell_cut_vol;
+        num_cells++;
       }
 
       // 4. Calculate FEE force on the unyielding soil 1 cell directly in front
@@ -979,12 +985,12 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   dozer->last_yaw_moment = total_yaw_moment;
   dozer->last_roll_moment = total_roll_moment;
 
-  // 5. Add the cut volume to the loose soil layer directly in front of the visited cells
-  if (total_vol_cut > 0.0f && num_cells > 0)
+  // 5. Add the cut volume to the loose soil layer directly in front of the specific cell it was cut from
+  for (int s = 0; s < num_cells; s++)
   {
-    float dh = (total_vol_cut / num_cells) / (CELL_SIZE * CELL_SIZE);
-    for (int s = 0; s < num_cells; s++)
+    if (cut_vol[s] > 0.0f)
     {
+      float dh = cut_vol[s] / (CELL_SIZE * CELL_SIZE);
       int cx = visited_x[s];
       int cy = visited_y[s];
 
@@ -1008,7 +1014,7 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
 
   float LIFT_ARM_CG = 0.5f;
   float TOTAL_ARM_LEN = dozer->arm_length + cosf(dozer->pos_blade_pitch + 0.5f) * dozer->pitch_length;
-  float arm_gravity_torque = dozer->arm_mass * GRAVITY * TOTAL_ARM_LEN * LIFT_ARM_CG * cosf(dozer->pos_virtual_lift_arm);
+  float arm_gravity_torque = (dozer->arm_mass + dozer->pitch_mass + dozer->blade_mass) * GRAVITY * TOTAL_ARM_LEN * LIFT_ARM_CG * cosf(dozer->pos_virtual_lift_arm);
   float arm_resist_torque = sinf(dozer->pos_virtual_lift_arm) * dozer->last_force * TOTAL_ARM_LEN;
   float arm_total_extern_torque = -arm_gravity_torque - arm_resist_torque;
 
@@ -1020,7 +1026,7 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
   dozer->vel_virtual_lift_arm = (dozer->vel_virtual_lift_arm + ((dozer->effort_lift * dozer->max_torque_lift_arm + arm_total_extern_torque) / dozer->arm_inertia) * dt) / (1.0f + (dozer->virtual_lift_arm_damping / dozer->arm_inertia) * dt);
 
   float PITCH_LINK_CG = 0.75f;
-  float pitch_gravity_torque = dozer->pitch_mass * GRAVITY * dozer->pitch_length * PITCH_LINK_CG * cosf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch);
+  float pitch_gravity_torque = (dozer->pitch_mass + dozer->blade_mass) * GRAVITY * dozer->pitch_length * PITCH_LINK_CG * cosf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch);
   float pitch_resist_torque = sinf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch) * dozer->last_force * dozer->pitch_length;
   float pitch_total_extern_torque = -pitch_gravity_torque - pitch_resist_torque;
   if (dozer->effort_pitch * pitch_total_extern_torque <= 0)
@@ -1153,7 +1159,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
         }
       }
     }
-    
+
     for (int i = min_i; i <= max_i; i++)
     {
       for (int j = min_j; j <= max_j; j++)
@@ -1272,35 +1278,55 @@ static inline void env_reset(SoilEnv* env)
 {
   env->loose_soil_density = 1200.0f;
   env->soil_gamma = 15000.0f;
-  env->soil_c = 0.0f; // 0 cohesion for dry sand to allow proper slumping
+  env->soil_c = 300.0f; // 0 cohesion for dry sand to allow proper slumping
   env->soil_phi = 30.0f * M_PI / 180.0f;
   env->soil_delta = 10.0f * M_PI / 180.0f;
   env->swell_ratio = 1.2f;
 
   Dozer* dozer = &env->dozer;
-  dozer->machine_mass = 8570.0f;
-  dozer->machine_inertia = 5071.0f;
+
+  // dimensions | m
   dozer->track_length = 1.7112f;
   dozer->track_width = 0.4572f; 
   dozer->track_gauge = 1.5494f;
   dozer->blade_width = 1.85f;
   dozer->blade_height = 0.76f;
   dozer->blade_rake_angle = 30.0f * M_PI / 180.0f;
+  dozer->blade_mount_pitch = 0.0f;
+  dozer->arm_length = 3.8f;
+  dozer->arm_pivot_x = -2.2f;
+  dozer->arm_pivot_z = 1.8987f;
+  dozer->pitch_length = 0.83f;
+
+  // max forces | N
   dozer->max_force_linear = 25000.0f;
   dozer->max_force_rotational = 8000.0f;
-  dozer->max_torque_pitch = 3000.0f;
+
+  // max torques | Nm
+  dozer->max_torque_pitch = 5000.0f;
   dozer->max_torque_roll = 1500.0f;
   dozer->max_torque_lift_arm = 5000.0f;
+
+  // masses | kg
+  dozer->machine_mass = 5200.0f;
   dozer->arm_mass = 490.0f;
-  dozer->pitch_mass = 100.0f;
+  dozer->pitch_mass = 200.0f;
+  dozer->blade_mass = 635.0f;
+
+  // inertia
+  dozer->machine_inertia = 5071.0f;
   dozer->arm_inertia = 7000.0f;
   dozer->roll_inertia = 80.0f;
   dozer->pitch_intertia = 19.0f;
-  dozer->track_damping = 3.5f; // (30000 / 8570)
+
+  // damping
   dozer->hydraulic_stiffness = 0.9998f;
+  dozer->track_damping = 3.5f; // (30000 / 8570)
   dozer->virtual_lift_arm_damping = 30000.0f;
-  dozer->blade_pitch_damping = 50000.0f;
-  dozer->blade_roll_damping = 50000.0f;
+  dozer->blade_pitch_damping = 30000.0f;
+  dozer->blade_roll_damping = 30000.0f;
+
+  // limits | rad
   dozer->pos_virtual_lift_arm_min = -0.5f;
   dozer->pos_virtual_lift_arm_max = 0.5f;
   dozer->pos_blade_pitch_min = -0.5f;
@@ -1308,11 +1334,6 @@ static inline void env_reset(SoilEnv* env)
   dozer->pos_blade_roll_min = -0.5f;
   dozer->pos_blade_roll_max = 0.5f;
 
-  dozer->arm_length = 3.8f;
-  dozer->arm_pivot_x = -2.2f;
-  dozer->arm_pivot_z = 1.8987f;
-  dozer->pitch_length = 0.83f;
-  dozer->blade_mount_pitch = 0.0f;
 
   dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
@@ -1357,6 +1378,11 @@ void c_step(SoilEnv* env)
 
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
+
+  // for (int i = 0; i < 5; i++)
+  // {
+  //  simulate_step(env, 0.167f * 0.2f);
+  // }
 
   simulate_step(env, 0.167f);
 
