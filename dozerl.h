@@ -355,7 +355,7 @@ static inline void get_obs(SoilEnv* env)
   // next we get the dozer's cell position and shift by half the obs grid size to get to the starting corner
   float half_obs_grid = SPATIAL_OBS_SIZE * 0.5f;
   float obs_start_x = (dozer->position_x / CELL_SIZE) - half_obs_grid * cos_y + half_obs_grid * sin_y;
-  float obs_start_y = (dozer->position_x / CELL_SIZE) - half_obs_grid * sin_y - half_obs_grid * cos_y;
+  float obs_start_y = (dozer->position_y / CELL_SIZE) - half_obs_grid * sin_y - half_obs_grid * cos_y;
 
   // then we iterate to get all cells in the obs space
   for (int i = 0; i < SPATIAL_OBS_SIZE; i++)
@@ -1306,7 +1306,8 @@ static inline void env_reset(SoilEnv* env)
 {
   env->loose_soil_density = 1200.0f;
   env->soil_gamma = 15000.0f;
-  env->soil_c = 300.0f; // 0 cohesion for dry sand to allow proper slumping
+  env->soil_c = 300.0f;   // (Pa) soil cohesion
+  env->soil_c_a = 0.0f;   // (Pa) soil-blade adhesion
   env->soil_phi = 30.0f * M_PI / 180.0f;
   env->soil_delta = 10.0f * M_PI / 180.0f;
   env->swell_ratio = 1.2f;
