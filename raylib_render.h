@@ -6,6 +6,7 @@
 #include <rlgl.h>
 
 static Camera3D camera = { 0 };
+static bool show_goal = false;  // toggled with 'G': translucent goal-map overlay
 
 static inline void init_render()
 {
@@ -99,6 +100,56 @@ static inline void draw_heightmap_fast(SoilEnv* env)
   rlEnd();
 }
 
+static inline void set_goal_color(char region)
+{
+  if (region == 1)      rlColor4ub(40, 120, 255, 120);   // 1 = Cut (slot)  -> translucent blue
+  else if (region == 2) rlColor4ub(40, 220, 120, 120);   // 2 = Fill (pile) -> translucent green
+  else                  rlColor4ub(200, 200, 200, 60);    // neutral (rarely drawn)
+}
+
+// Translucent "ghost" of the target heightmap (grid_G). Rendered with depth test disabled so the
+// slot (which sits below the flat starting terrain) is visible through the ground as an x-ray.
+// Only the worked cells (map_region != 0) are drawn, so the flat neutral goal doesn't clutter.
+static inline void draw_goal_map(SoilEnv* env)
+{
+  float cw = CELL_SIZE;
+
+  rlDisableDepthTest();   // x-ray: draw over the terrain regardless of occlusion
+  rlDisableDepthMask();   // don't write depth; keep it a pure overlay
+  rlSetBlendMode(RL_BLEND_ALPHA);
+
+  rlBegin(RL_QUADS);
+  for (int i = 0; i < GRID_SIZE - 1; i++)
+  {
+    for (int j = 0; j < GRID_SIZE - 1; j++)
+    {
+      char r00 = env->map_region[i][j];
+      char r10 = env->map_region[i+1][j];
+      char r01 = env->map_region[i][j+1];
+      char r11 = env->map_region[i+1][j+1];
+      if (r00 == 0 && r10 == 0 && r01 == 0 && r11 == 0) continue;  // skip untouched terrain
+
+      float h00 = env->grid_G[i][j];
+      float h10 = env->grid_G[i+1][j];
+      float h01 = env->grid_G[i][j+1];
+      float h11 = env->grid_G[i+1][j+1];
+
+      float x0 = i * cw, x1 = (i+1) * cw;
+      float z0 = j * cw, z1 = (j+1) * cw;
+
+      set_goal_color(r00); rlVertex3f(x0, h00, z0);
+      set_goal_color(r01); rlVertex3f(x0, h01, z1);
+      set_goal_color(r11); rlVertex3f(x1, h11, z1);
+      set_goal_color(r10); rlVertex3f(x1, h10, z0);
+    }
+  }
+  rlEnd();
+
+  rlSetBlendMode(RL_BLEND_ALPHA);
+  rlEnableDepthMask();
+  rlEnableDepthTest();
+}
+
 // raylib has a weird coordinate system (x, -z, y)
 static inline void draw_rectangular_prism(Vector3 position, Vector3 rotation, Vector3 size, Color color)
 {
@@ -176,6 +227,8 @@ static inline void render_step(SoilEnv* env)
 {
   Dozer* dozer = &env->dozer;
 
+  if (IsKeyPressed(KEY_G)) show_goal = !show_goal;
+
   camera.target = (Vector3){ dozer->position_x, dozer->position_z, dozer->position_y };
   float cam_dist = 12.0f;
   float cam_height = 8.0f;
@@ -190,10 +243,12 @@ static inline void render_step(SoilEnv* env)
   BeginMode3D(camera);
   draw_heightmap_fast(env);
   draw_dozer(env);
+  if (show_goal) draw_goal_map(env);
   EndMode3D();
 
   DrawFPS(10, 10);
-  DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll", 10, 40, 20, DARKGRAY);
+  DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal", 10, 40, 20, DARKGRAY);
+  DrawText(TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), 10, 250, 20, show_goal ? GREEN : GRAY);
 
   if (IsGamepadAvailable(0)) 
   {

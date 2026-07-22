@@ -1330,6 +1330,83 @@ static inline void simulate_step(SoilEnv* env, float dt)
   env->step_num++;
 }
 
+// Build the target heightmap: the starting terrain, minus a cut "slot" and plus a "pile" made of the
+// soil that slot yields. Volume is kept (roughly) consistent across the compact->loose swell, i.e.
+// loose pile volume = swell_ratio * compact slot volume. The pile is a triangular ridge spanning one
+// blade width at the far end of the slot (~1 m tall); the slot is 2.5-5 m long with varied depth.
+static inline void generate_goal_map(SoilEnv* env)
+{
+  Dozer* dozer = &env->dozer;
+
+  // Goal starts equal to the current terrain everywhere; region defaults to neutral.
+  for (int i = 0; i < GRID_SIZE; i++)
+  {
+    for (int j = 0; j < GRID_SIZE; j++)
+    {
+      env->grid_G[i][j] = env->grid_H[i][j] + env->grid_L[i][j];
+      env->map_region[i][j] = 0; // 0 = Neutral
+    }
+  }
+
+  float width = dozer->blade_width;   // slot & pile span one blade width
+  float half_w = width * 0.5f;
+
+  // Randomized geometry (per-episode)
+  float slot_len    = 2.5f + rand_f(&env->rng) * 2.5f;   // [2.5, 5.0] m
+  float slot_depth  = 0.15f + rand_f(&env->rng) * 0.30f; // [0.15, 0.45] m
+  float pile_height = 0.8f + rand_f(&env->rng) * 0.4f;   // [0.8, 1.2] m (~1 m)
+
+  // Volume balance: loose pile = swell_ratio * compacted cut
+  float cut_volume  = slot_len * width * slot_depth;
+  float pile_volume = env->swell_ratio * cut_volume;
+
+  // Triangular ridge across the blade width: V = 0.5 * base * height * width  ->  base length:
+  float pile_len = (2.0f * pile_volume) / (pile_height * width);
+
+  // Random heading; the slot mouth begins at the dozer and runs outward, pile at the far end.
+  float theta = rand_f(&env->rng) * 2.0f * PI;
+  float dir_x = cosf(theta),  dir_y = sinf(theta);
+  float perp_x = -dir_y,      perp_y = dir_x;
+  float start_x = dozer->position_x;
+  float start_y = dozer->position_y;
+
+  float total_len = slot_len + pile_len;
+  float half_pile = pile_len * 0.5f;
+
+  for (int i = 0; i < GRID_SIZE; i++)
+  {
+    for (int j = 0; j < GRID_SIZE; j++)
+    {
+      float cell_x = (i + 0.5f) * CELL_SIZE;
+      float cell_y = (j + 0.5f) * CELL_SIZE;
+      float rx = cell_x - start_x;
+      float ry = cell_y - start_y;
+
+      float u = rx * dir_x + ry * dir_y;    // along the slot->pile axis
+      float v = rx * perp_x + ry * perp_y;  // across the width
+
+      if (fabsf(v) > half_w) continue;      // outside the worked strip
+      if (u < 0.0f || u > total_len) continue;
+
+      if (u <= slot_len)
+      {
+        env->grid_G[i][j] -= slot_depth;    // dig the slot
+        env->map_region[i][j] = 1;          // 1 = Cut
+      }
+      else
+      {
+        float p = u - slot_len;             // 0..pile_len within the pile
+        float h = pile_height * (1.0f - fabsf(p - half_pile) / half_pile); // triangular ridge
+        if (h < 0.0f) h = 0.0f;
+        env->grid_G[i][j] += h;             // heap the pile
+        env->map_region[i][j] = 2;          // 2 = Fill
+      }
+
+      if (env->grid_G[i][j] < 0.0f) env->grid_G[i][j] = 0.0f;
+    }
+  }
+}
+
 static inline void env_reset(SoilEnv* env)
 {
   env->loose_soil_density = 1200.0f;
@@ -1405,10 +1482,13 @@ static inline void env_reset(SoilEnv* env)
 
   for(int i = 0; i < GRID_SIZE; i++) {
     for(int j = 0; j < GRID_SIZE; j++) {
-      env->grid_H[i][j] = 1.0f; 
-      env->grid_L[i][j] = 0.0f; 
+      env->grid_H[i][j] = 1.0f;
+      env->grid_L[i][j] = 0.0f;
+      env->original_H[i][j] = env->grid_H[i][j] + env->grid_L[i][j];  // snapshot of starting terrain
     }
   }
+
+  generate_goal_map(env);
 
   precompute_soil_bearing_capacity(env);
 }
