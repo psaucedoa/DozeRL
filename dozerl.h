@@ -1089,9 +1089,9 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   int base_i = center_i - margin;
   int base_j = center_j - margin;
 
-  // float loader_length = dozer->track_length + 1.0f; // rough approximation
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
+  float K_factor = env->soil_c / (env->loose_soil_density * GRAVITY);
   float half_bw = dozer->blade_width * 0.5f;
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
@@ -1125,6 +1125,10 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
 
   static const int dx[8] = {1, -1, 0, 0, 1, 1, -1, -1};  // 8 surrounding pixel locations
   static const int dy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+  static const float dists[8] = {
+    CELL_SIZE, CELL_SIZE, CELL_SIZE, CELL_SIZE,
+    CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f
+  };
 
   for (int iter = 0; iter < num_loops; iter++)  // loop 3 times
   {
@@ -1153,6 +1157,24 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
           if (L_ij <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
           float total_h = temp_T[li][lj];  // get total height at this pixel
 
+          float L_val = L_ij;
+          if (L_val < 1e-5f) L_val = 1e-5f;
+          float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
+          float t_limit = tan_phi;
+
+          if (K >= 1e-5f)
+          {
+            float disc = 1.0f - 4.0f * K * (tan_phi + K);
+            if (disc > 0.0f)
+            {
+              t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
+            }
+            else
+            {
+              t_limit = 1e9f;  // basically infinity
+            }
+          }
+
           for (int d = 0; d < 8; d++)  // look through the 8 surrounding pixels
           {
             int lni = li + dx[d], lnj = lj + dy[d];
@@ -1161,26 +1183,8 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
             float dH = total_h - temp_T[lni][lnj];
             if (dH <= 0.0f) continue;  // only shed to lower neighbors
 
-            float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f);  // diagonal -> * sqrt(2)
+            float dist = dists[d];
             float t = dH / dist;
-
-            float L_val = L_ij;
-            if (L_val < 1e-5f) L_val = 1e-5f;
-            float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
-            float t_limit = tan_phi;
-
-            if (K >= 1e-5f)
-            {
-              float disc = 1.0f - 4.0f * K * (tan_phi + K);
-              if (disc > 0.0f)
-              {
-                t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
-              }
-              else
-              {
-                t_limit = 1e9f;  // basically infinity
-              }
-            }
 
             if (t > t_limit)
             {
