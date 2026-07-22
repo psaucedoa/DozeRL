@@ -522,53 +522,8 @@ static inline void forward_kinematics(SoilEnv* env)
     u_joint_local_pos[2] + blade_edge_offset[2]
   };
 
-  // 5. Transform all joints from chassis local frame to world frame using dozer->q
+  // 5. Transform blade edge from chassis local frame to world frame using dozer->q
   float chassis_pos[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
-
-  // Lift arm joint world pose
-  float lift_arm_world_pos[3];
-  quat_rotate(dozer->q, lift_arm_local_pos, lift_arm_world_pos);
-  dozer->_lift_arm_joint_pose[0] = lift_arm_world_pos[0] + chassis_pos[0];
-  dozer->_lift_arm_joint_pose[1] = lift_arm_world_pos[1] + chassis_pos[1];
-  dozer->_lift_arm_joint_pose[2] = lift_arm_world_pos[2] + chassis_pos[2];
-
-  float q_arm_world[4];
-  quat_multiply(dozer->q, q_arm_local, q_arm_world);
-  float rpy_arm[3];
-  quat_to_euler(q_arm_world, rpy_arm);
-  dozer->_lift_arm_joint_pose[3] = rpy_arm[0];
-  dozer->_lift_arm_joint_pose[4] = rpy_arm[1];
-  dozer->_lift_arm_joint_pose[5] = rpy_arm[2];
-
-  // Pitch joint world pose
-  float pitch_joint_world_pos[3];
-  quat_rotate(dozer->q, pitch_joint_local_pos, pitch_joint_world_pos);
-  dozer->_pitch_joint_pose[0] = pitch_joint_world_pos[0] + chassis_pos[0];
-  dozer->_pitch_joint_pose[1] = pitch_joint_world_pos[1] + chassis_pos[1];
-  dozer->_pitch_joint_pose[2] = pitch_joint_world_pos[2] + chassis_pos[2];
-
-  float q_pitch_world[4];
-  quat_multiply(dozer->q, q_pitch_local, q_pitch_world);
-  float rpy_pitch[3];
-  quat_to_euler(q_pitch_world, rpy_pitch);
-  dozer->_pitch_joint_pose[3] = rpy_pitch[0];
-  dozer->_pitch_joint_pose[4] = rpy_pitch[1];
-  dozer->_pitch_joint_pose[5] = rpy_pitch[2];
-
-  // U-joint world pose
-  float u_joint_world_pos[3];
-  quat_rotate(dozer->q, u_joint_local_pos, u_joint_world_pos);
-  dozer->_u_joint_pose[0] = u_joint_world_pos[0] + chassis_pos[0];
-  dozer->_u_joint_pose[1] = u_joint_world_pos[1] + chassis_pos[1];
-  dozer->_u_joint_pose[2] = u_joint_world_pos[2] + chassis_pos[2];
-
-  float q_u_joint_world[4];
-  quat_multiply(dozer->q, q_u_joint_local, q_u_joint_world);
-  float rpy_u_joint[3];
-  quat_to_euler(q_u_joint_world, rpy_u_joint);
-  dozer->_u_joint_pose[3] = rpy_u_joint[0];
-  dozer->_u_joint_pose[4] = rpy_u_joint[1];
-  dozer->_u_joint_pose[5] = rpy_u_joint[2];
 
   // Blade edge world pose
   float blade_edge_world_pos[3];
@@ -1091,7 +1046,6 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
 
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
-  float K_factor = env->soil_c / (env->loose_soil_density * GRAVITY);
   float half_bw = dozer->blade_width * 0.5f;
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
@@ -1516,6 +1470,99 @@ void c_step(SoilEnv* env)
 
 #include "raylib_render.h"
 
+static inline void forward_kinematics_visual(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  float theta_arm = dozer->pos_virtual_lift_arm;
+  float theta_pitch = dozer->pos_blade_pitch;
+
+  // 1. Lift arm joint (local in chassis frame)
+  float q_arm_local[4];
+  euler_to_quat(0.0f, -theta_arm, 0.0f, q_arm_local);
+  float lift_arm_local_pos[3] = {dozer->arm_pivot_x, 0.0f, dozer->arm_pivot_z};
+
+  // 2. Pitch joint (local in chassis frame)
+  float arm_vector[3] = {dozer->arm_length, 0.0f, 0.0f};
+  float arm_offset[3];
+  quat_rotate(q_arm_local, arm_vector, arm_offset);
+
+  float pitch_joint_local_pos[3] = {
+    lift_arm_local_pos[0] + arm_offset[0],
+    lift_arm_local_pos[1] + arm_offset[1],
+    lift_arm_local_pos[2] + arm_offset[2]
+  };
+
+  float q_pitch_rel[4];
+  euler_to_quat(0.0f, -theta_pitch, 0.0f, q_pitch_rel);
+  float q_pitch_local[4];
+  quat_multiply(q_arm_local, q_pitch_rel, q_pitch_local);
+
+  // 3. Universal joint (local in chassis frame)
+  float pitch_vector[3] = {dozer->pitch_length, 0.0f, 0.0f};
+  float pitch_offset[3];
+  quat_rotate(q_pitch_local, pitch_vector, pitch_offset);
+
+  float u_joint_local_pos[3] = {
+    pitch_joint_local_pos[0] + pitch_offset[0],
+    pitch_joint_local_pos[1] + pitch_offset[1],
+    pitch_joint_local_pos[2] + pitch_offset[2]
+  };
+
+  float q_u_joint_rel[4];
+  euler_to_quat(dozer->pos_blade_roll, 0.0f, dozer->pos_blade_yaw, q_u_joint_rel);
+  float q_u_joint_local[4];
+  quat_multiply(q_pitch_local, q_u_joint_rel, q_u_joint_local);
+
+  // Transform intermediate joints from chassis local frame to world frame using dozer->q
+  float chassis_pos[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
+
+  // Lift arm joint world pose
+  float lift_arm_world_pos[3];
+  quat_rotate(dozer->q, lift_arm_local_pos, lift_arm_world_pos);
+  dozer->_lift_arm_joint_pose[0] = lift_arm_world_pos[0] + chassis_pos[0];
+  dozer->_lift_arm_joint_pose[1] = lift_arm_world_pos[1] + chassis_pos[1];
+  dozer->_lift_arm_joint_pose[2] = lift_arm_world_pos[2] + chassis_pos[2];
+
+  float q_arm_world[4];
+  quat_multiply(dozer->q, q_arm_local, q_arm_world);
+  float rpy_arm[3];
+  quat_to_euler(q_arm_world, rpy_arm);
+  dozer->_lift_arm_joint_pose[3] = rpy_arm[0];
+  dozer->_lift_arm_joint_pose[4] = rpy_arm[1];
+  dozer->_lift_arm_joint_pose[5] = rpy_arm[2];
+
+  // Pitch joint world pose
+  float pitch_joint_world_pos[3];
+  quat_rotate(dozer->q, pitch_joint_local_pos, pitch_joint_world_pos);
+  dozer->_pitch_joint_pose[0] = pitch_joint_world_pos[0] + chassis_pos[0];
+  dozer->_pitch_joint_pose[1] = pitch_joint_world_pos[1] + chassis_pos[1];
+  dozer->_pitch_joint_pose[2] = pitch_joint_world_pos[2] + chassis_pos[2];
+
+  float q_pitch_world[4];
+  quat_multiply(dozer->q, q_pitch_local, q_pitch_world);
+  float rpy_pitch[3];
+  quat_to_euler(q_pitch_world, rpy_pitch);
+  dozer->_pitch_joint_pose[3] = rpy_pitch[0];
+  dozer->_pitch_joint_pose[4] = rpy_pitch[1];
+  dozer->_pitch_joint_pose[5] = rpy_pitch[2];
+
+  // U-joint world pose
+  float u_joint_world_pos[3];
+  quat_rotate(dozer->q, u_joint_local_pos, u_joint_world_pos);
+  dozer->_u_joint_pose[0] = u_joint_world_pos[0] + chassis_pos[0];
+  dozer->_u_joint_pose[1] = u_joint_world_pos[1] + chassis_pos[1];
+  dozer->_u_joint_pose[2] = u_joint_world_pos[2] + chassis_pos[2];
+
+  float q_u_joint_world[4];
+  quat_multiply(dozer->q, q_u_joint_local, q_u_joint_world);
+  float rpy_u_joint[3];
+  quat_to_euler(q_u_joint_world, rpy_u_joint);
+  dozer->_u_joint_pose[3] = rpy_u_joint[0];
+  dozer->_u_joint_pose[4] = rpy_u_joint[1];
+  dozer->_u_joint_pose[5] = rpy_u_joint[2];
+}
+
 void c_render(SoilEnv* env)
 {
   if (!IsWindowReady())
@@ -1528,6 +1575,7 @@ void c_render(SoilEnv* env)
     exit(0);
   }
 
+  forward_kinematics_visual(env);
   render_step(env);
 }
 
