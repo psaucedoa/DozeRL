@@ -1438,8 +1438,8 @@ static inline void env_reset(SoilEnv* env)
 
   // max torques | Nm
   dozer->max_torque_pitch = 5000.0f;
-  dozer->max_torque_roll = 1500.0f;
-  dozer->max_torque_lift_arm = 5000.0f;
+  dozer->max_torque_roll = 2500.0f;
+  dozer->max_torque_lift_arm = 9000.0f;
 
   // masses | kg
   dozer->machine_mass = 5200.0f;
@@ -1449,16 +1449,16 @@ static inline void env_reset(SoilEnv* env)
 
   // inertia
   dozer->machine_inertia = 5071.0f;
-  dozer->arm_inertia = 7000.0f;
+  dozer->arm_inertia = 5000.0f;
   dozer->roll_inertia = 80.0f;
   dozer->pitch_intertia = 19.0f;
 
   // damping
   dozer->hydraulic_stiffness = 0.9998f;
-  dozer->track_damping = 3.5f; // (30000 / 8570)
+  dozer->track_damping = 3.0f; // (30000 / 8570)
   dozer->virtual_lift_arm_damping = 30000.0f;
-  dozer->blade_pitch_damping = 30000.0f;
-  dozer->blade_roll_damping = 30000.0f;
+  dozer->blade_pitch_damping = 5000.0f;
+  dozer->blade_roll_damping = 5000.0f;
 
   // limits | rad
   dozer->pos_virtual_lift_arm_min = -0.5f;
@@ -1521,7 +1521,7 @@ void c_step(SoilEnv* env)
   // Single physics step per control action (no top-level sub-stepping for now).
   // Soil erosion still sub-loops internally (see simulate_erosion, num_loops=3).
   // Revisit if the main loop proves unstable once we run/test the sim.
-  simulate_step(env, 0.167f);
+  simulate_step(env, 0.0167);
 
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
