@@ -128,10 +128,6 @@ typedef struct
   float pos_blade_yaw_min;         // (rad)
   float pos_blade_yaw_max;         // (rad)
 
-  // force limits
-  float max_force_linear;
-  float max_force_rotational;
-
   // Dynamics
   float last_force;       // (N) Previous Reaction Force?
   float last_yaw_moment;  // (N*m)
@@ -143,7 +139,7 @@ typedef struct
   float max_torque_pitch;
   float max_torque_roll;
   float max_torque_rotational;
-  float max_force_track;  // this or max_force_linear? Probably this, just determine max force per track, and calc stuff by summing track forces?
+  float max_force_track;  // (N) max hydraulic thrust one track can produce; linear & yaw both derive from this
   float virtual_lift_arm_damping;
   float blade_pitch_damping;
   float blade_roll_damping;
@@ -751,19 +747,30 @@ static inline void update_kinematics(SoilEnv* env)
 static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   Dozer * dozer = &env->dozer;
 
-  float effort_left = clamp_action(dozer->effort_linear - dozer->effort_rotational);
+  // Differential (skid-steer) mixing: a single hydraulic system feeds both tracks, so linear and
+  // yaw commands share the same per-track force budget. Each track command saturates at +/-1.
+  float effort_left  = clamp_action(dozer->effort_linear - dozer->effort_rotational);
   float effort_right = clamp_action(dozer->effort_linear + dozer->effort_rotational);
 
-  float f_hyd_left = effort_left * dozer->max_force_linear / 2.0f;
-  float f_hyd_right = effort_right * dozer->max_force_linear / 2.0f;
-  float f_hyd_total = f_hyd_left + f_hyd_right;
+  // Commanded thrust per track from the single hydraulic force limit.
+  float f_cmd_left  = effort_left  * dozer->max_force_track;
+  float f_cmd_right = effort_right * dozer->max_force_track;
 
-  float f_trac_max = calculate_max_traction(env);
-  float f_resist = dozer->last_force; 
+  // Traction ceiling per track (Mohr-Coulomb, even weight split between the two tracks).
+  float f_trac_track = calculate_max_traction(env) * 0.5f;
 
-  float f_push = fminf(fabsf(f_hyd_total), f_trac_max);
-  if (f_hyd_total < 0) f_push = -f_push;
+  // A track slips when its commanded thrust exceeds available traction; clamp to what the soil holds.
+  int slip_left  = fabsf(f_cmd_left)  > f_trac_track;
+  int slip_right = fabsf(f_cmd_right) > f_trac_track;
+  float f_left  = fmaxf(-f_trac_track, fminf(f_cmd_left,  f_trac_track));
+  float f_right = fmaxf(-f_trac_track, fminf(f_cmd_right, f_trac_track));
 
+  // Couple the two tracks: net forward thrust is the sum, yaw torque is the differential thrust about
+  // the track center (moment arm = half the gauge). Both now scale off the one max_force_track param.
+  float f_push = f_left + f_right;
+  float drive_torque = (f_right - f_left) * (dozer->track_gauge * 0.5f);
+
+  float f_resist = dozer->last_force;
   float f_net = f_push;
   float actual_f_resist = 0.0f;
 
@@ -793,30 +800,28 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   }
 
   dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
-  dozer->twist_linear_x *= (1.0f - dozer->track_damping * dt); 
+  dozer->twist_linear_x *= (1.0f - dozer->track_damping * dt);
 
-  // if our applied force is greater than our available traction
-    if (fabsf(f_hyd_total) > f_trac_max)
-    {
-      float max_track_speed = 3.0f; 
-
-      // we're slipping, so track velocities just depend on commanded effort
-      dozer->vel_tracks_linear = dozer->effort_linear * max_track_speed;
-    }
-    else
-    {
-      // otherwise, track velocities are equal to actual vehicle movement
-      dozer->vel_tracks_linear = dozer->twist_linear_x;
-    }
-
+  // Yaw dynamics: differential track torque plus the (scaled) soil reaction moment.
   float actual_yaw_moment = 0.0f;
   if (f_resist > 0.001f) {
       actual_yaw_moment = dozer->last_yaw_moment * (actual_f_resist / f_resist);
   }
-
-  float torque_net = (dozer->effort_rotational * dozer->max_force_rotational) + actual_yaw_moment;
+  float torque_net = drive_torque + actual_yaw_moment;
   dozer->twist_angular_z += (torque_net / dozer->machine_inertia) * dt;
   dozer->twist_angular_z *= (1.0f - dozer->track_damping * dt);
+
+  // Report track surface speeds. A slipping track spins at its commanded speed; a gripping track
+  // matches the ground speed at its own contact line. Convert the two into the linear (mean) and
+  // rotational (differential) components the observation expects.
+  float max_track_speed = 3.0f;
+  float half_gauge = dozer->track_gauge * 0.5f;
+  float v_ground_left  = dozer->twist_linear_x - dozer->twist_angular_z * half_gauge;
+  float v_ground_right = dozer->twist_linear_x + dozer->twist_angular_z * half_gauge;
+  float v_track_left  = slip_left  ? effort_left  * max_track_speed : v_ground_left;
+  float v_track_right = slip_right ? effort_right * max_track_speed : v_ground_right;
+  dozer->vel_tracks_linear     = 0.5f * (v_track_left + v_track_right);
+  dozer->vel_tracks_rotational = (v_track_right - v_track_left) / dozer->track_gauge;
 }
 
 static inline void update_chassis_2d_position(SoilEnv* env, float dt)
@@ -1432,9 +1437,8 @@ static inline void env_reset(SoilEnv* env)
   dozer->arm_pivot_z = 1.8987f;
   dozer->pitch_length = 0.83f;
 
-  // max forces | N
-  dozer->max_force_linear = 25000.0f;
-  dozer->max_force_rotational = 8000.0f;
+  // max track force | N (single hydraulic thrust budget per track; linear & yaw both derive from this)
+  dozer->max_force_track = 12500.0f;
 
   // max torques | Nm
   dozer->max_torque_pitch = 5000.0f;
