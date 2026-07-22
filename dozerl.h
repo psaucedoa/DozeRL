@@ -11,6 +11,8 @@
 #define SPATIAL_OBS_SIZE 50  // grid size for the map observations
 #define GRID_SIZE 150
 #define CELL_SIZE 0.2f
+#define EROSION_MARGIN 20  // cells buffered around the blade for slumping (~4.0m at CELL_SIZE=0.2f); keep in sync with CELL_SIZE
+#define EROSION_WIN (2 * EROSION_MARGIN + 1)  // side length of the local erosion scratch window
 #define GRAVITY 9.81f
 #define PI 3.14159265358979323846f
 // for more global params, see env_reset(), since we'll be randomizing these values between runs
@@ -134,6 +136,7 @@ typedef struct
   float last_force;       // (N) Previous Reaction Force?
   float last_yaw_moment;  // (N*m)
   float last_roll_moment; // (N*m)
+  float last_push_sign;   // (+1 forward / -1 backdrag) soil-push direction, held across steps for hysteresis
 
   // Actuator Dynamics Constants
   float max_torque_lift_arm;
@@ -915,12 +918,21 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   float x_denom = sqrtf(x_axis_world[0] * x_axis_world[0] + x_axis_world[1] * x_axis_world[1]);
   if (x_denom < 1e-6f) x_denom = 1e-6f;
   
-  float push_sign = 1.0f;
-  if (dozer->twist_linear_x < -0.01f) {
+  // Soil-push direction. Follow motion when it's clear; fall back to commanded effort when
+  // nearly stopped; otherwise hold the previous direction (hysteresis) so we don't flip-flop
+  // while creeping through zero velocity (e.g. coasting out of a backdrag). Stored on the dozer
+  // so simulate_erosion() and update_surcharge() reuse the same direction this step.
+  float push_sign = dozer->last_push_sign;
+  if (dozer->twist_linear_x > 0.01f) {
+      push_sign = 1.0f;
+  } else if (dozer->twist_linear_x < -0.01f) {
       push_sign = -1.0f;
-  } else if (dozer->effort_linear < -0.01f && fabsf(dozer->twist_linear_x) <= 0.01f) {
+  } else if (dozer->effort_linear > 0.01f) {
+      push_sign = 1.0f;
+  } else if (dozer->effort_linear < -0.01f) {
       push_sign = -1.0f;
   }
+  dozer->last_push_sign = push_sign;
 
   float fwd_dir_x = (x_axis_world[0] / x_denom) * push_sign;
   float fwd_dir_y = (x_axis_world[1] / x_denom) * push_sign;
@@ -997,8 +1009,8 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
 
         float df = calculate_FEE_column(env, f_hard_depth, f_total_depth, effective_width);
         total_force += df;
-        total_yaw_moment += df * local_y * push_sign; 
-        total_roll_moment += df * local_y; 
+        total_yaw_moment += df * local_y * push_sign;
+        total_roll_moment += df * local_y * push_sign;
       }
     }
 
@@ -1043,7 +1055,9 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
   float LIFT_ARM_CG = 0.5f;
   float TOTAL_ARM_LEN = dozer->arm_length + cosf(dozer->pos_blade_pitch + 0.5f) * dozer->pitch_length;
   float arm_gravity_torque = (dozer->arm_mass + dozer->pitch_mass + dozer->blade_mass) * GRAVITY * TOTAL_ARM_LEN * LIFT_ARM_CG * cosf(dozer->pos_virtual_lift_arm);
-  float arm_resist_torque = sinf(dozer->pos_virtual_lift_arm) * dozer->last_force * TOTAL_ARM_LEN;
+  // Horizontal soil reaction reverses with travel direction (last_push_sign): its generalized torque
+  // on the arm flips between forward pushing and backdragging. last_force is an unsigned magnitude.
+  float arm_resist_torque = sinf(dozer->pos_virtual_lift_arm) * dozer->last_force * TOTAL_ARM_LEN * dozer->last_push_sign;
   float arm_total_extern_torque = -arm_gravity_torque - arm_resist_torque;
 
   if (dozer->effort_lift * arm_total_extern_torque <= 0)
@@ -1055,7 +1069,7 @@ static inline void update_joint_vel(SoilEnv* env, float dt)
 
   float PITCH_LINK_CG = 0.75f;
   float pitch_gravity_torque = (dozer->pitch_mass + dozer->blade_mass) * GRAVITY * dozer->pitch_length * PITCH_LINK_CG * cosf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch);
-  float pitch_resist_torque = sinf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch) * dozer->last_force * dozer->pitch_length;
+  float pitch_resist_torque = sinf(dozer->pos_virtual_lift_arm + dozer->pos_blade_pitch) * dozer->last_force * dozer->pitch_length * dozer->last_push_sign;
   float pitch_total_extern_torque = -pitch_gravity_torque - pitch_resist_torque;
   if (dozer->effort_pitch * pitch_total_extern_torque <= 0)
   {
@@ -1094,7 +1108,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
 {
   Dozer* dozer = &env->dozer;
 
-  int margin = (int)(4.0f / CELL_SIZE);  // number of cells we buffer about the blade
+  int margin = EROSION_MARGIN;  // number of cells we buffer about the blade (~4.0m at CELL_SIZE=0.2)
   int center_i = (int)(dozer->blade_x / CELL_SIZE);  // get the ith cell location of the blade
   int min_i = clamp_idx(center_i - margin);  // use our buffer to find the min ith cell
   int max_i = clamp_idx(center_i + margin);  // same but for max
@@ -1102,14 +1116,21 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
+  // Local scratch buffers are indexed relative to the blade-centered window origin (base_i, base_j),
+  // so we only allocate the small EROSION_WIN^2 window instead of the full grid. Absolute grid cell
+  // (i, j) maps to local cell (i - base_i, j - base_j); the clamped [min,max] range always fits in [0, EROSION_WIN).
+  int base_i = center_i - margin;
+  int base_j = center_j - margin;
+
   // float loader_length = dozer->track_length + 1.0f; // rough approximation
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
 
-  float temp_L[GRID_SIZE][GRID_SIZE];  // hoisted outside loop to prevent repeated stack allocations
-  float delta_L[GRID_SIZE][GRID_SIZE]; // Array to accumulate symmetric slumping changes
+  float temp_L[EROSION_WIN][EROSION_WIN];   // loose-soil snapshot for the blade window
+  float delta_L[EROSION_WIN][EROSION_WIN];  // accumulates symmetric slumping changes
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
+  float push_sign = dozer->last_push_sign;  // set in interact_with_soil() earlier this step
 
   for (int iter = 0; iter < num_loops; iter++)  // loop 3 times
   {
@@ -1117,8 +1138,8 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
     {
       for (int j = min_j; j <= max_j; j++)
       {
-        temp_L[i][j] = env->grid_L[i][j];
-        delta_L[i][j] = 0.0f;
+        temp_L[i - base_i][j - base_j] = env->grid_L[i][j];
+        delta_L[i - base_i][j - base_j] = 0.0f;
       }
     }
 
@@ -1129,8 +1150,9 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
     {
       for (int j = min_j + 1; j < max_j; j++)
       {
-        if (temp_L[i][j] <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
-        float total_h = env->grid_H[i][j] + temp_L[i][j];  // get total height at this pixel
+        float L_ij = temp_L[i - base_i][j - base_j];
+        if (L_ij <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
+        float total_h = env->grid_H[i][j] + L_ij;  // get total height at this pixel
 
         for(int d=0; d<8; d++)  // look through the 8 surrounding pixels
         {
@@ -1146,17 +1168,20 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
 
           if (fabsf(local_y) <= dozer->blade_width / 2.0f)  // if this pixel is under the vehicle, don't bother
           {
-            if (local_x >= -loader_length && local_x <= 0.0f) continue; // prevent soil falling into the dozer
+            // Frozen zone tracks push direction: behind the blade (over the chassis) when pushing
+            // forward so the pile in front can slump; flipped to the front when backdragging so the
+            // dragged soil deposited behind the blade is free to level out (smoothing).
+            if (local_x * push_sign >= -loader_length && local_x * push_sign <= 0.0f) continue; // prevent soil falling into the dozer
           }
 
-          float neighbor_total_h = env->grid_H[ni][nj] + temp_L[ni][nj];  // get total height of surrounding pixel
+          float neighbor_total_h = env->grid_H[ni][nj] + temp_L[ni - base_i][nj - base_j];  // get total height of surrounding pixel
           float dH = total_h - neighbor_total_h;
           float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f);  // if surrounding pixel is diagnoal, mult by sqrt(2)
 
           if (dH > 0.0f)  // if current pixel is higher than neighbor
           {
             float t = dH / dist;
-            float L_val = temp_L[i][j];
+            float L_val = L_ij;
             if (L_val < 1e-5f) L_val = 1e-5f;
             float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
             float t_limit = tan_phi;
@@ -1178,9 +1203,9 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
             {
               float slip = (t - t_limit) * dist * 0.2f;
               // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
-              if (slip > temp_L[i][j] / 8.0f) slip = temp_L[i][j] / 8.0f;
-              delta_L[i][j] -= slip;
-              delta_L[ni][nj] += slip;
+              if (slip > L_ij / 8.0f) slip = L_ij / 8.0f;
+              delta_L[i - base_i][j - base_j] -= slip;
+              delta_L[ni - base_i][nj - base_j] += slip;
               // We DO NOT update total_h or temp_L here to maintain symmetry
             }
           }
@@ -1192,7 +1217,7 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
     {
       for (int j = min_j; j <= max_j; j++)
       {
-        env->grid_L[i][j] += delta_L[i][j];
+        env->grid_L[i][j] += delta_L[i - base_i][j - base_j];
         if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f; // Prevent negative loose soil
       }
     }
@@ -1240,6 +1265,7 @@ static inline void update_surcharge(SoilEnv* env)
   float half_width = dozer->blade_width / 2.0f;
   float lookahead = 1.5f;
   float cell_area = CELL_SIZE * CELL_SIZE;
+  float push_sign = dozer->last_push_sign;  // set in interact_with_soil() earlier this step
 
   for (int i = min_i; i <= max_i; i++)
   {
@@ -1253,11 +1279,13 @@ static inline void update_surcharge(SoilEnv* env)
       float dx = cell_x - dozer->blade_x;
       float dy = cell_y - dozer->blade_y;
 
-      // Transform cell coordinates into the blade's local horizontal frame
-      float local_x = dx * fwd_x + dy * fwd_y;
+      // Transform cell coordinates into the blade's local horizontal frame.
+      // Scale local_x by push_sign so the window follows the working direction: it captures the
+      // pile in front when pushing forward, and the dragged soil behind the blade when backdragging.
+      float local_x = (dx * fwd_x + dy * fwd_y) * push_sign;
       float local_y = dx * left_x + dy * left_y;
 
-      // Check if the cell is inside the 1.5m box directly in front of the blade
+      // Check if the cell is inside the 1.5m box on the working side of the blade
       if (local_x >= 0.0f && local_x <= lookahead && fabsf(local_y) <= half_width)
       {
         current_surcharge_vol += env->grid_L[i][j] * cell_area;
@@ -1373,6 +1401,8 @@ static inline void env_reset(SoilEnv* env)
   dozer->q[2] = 0.0f;
   dozer->q[3] = 0.0f;
 
+  dozer->last_push_sign = 1.0f;  // default to forward until motion/effort says otherwise
+
   for(int i = 0; i < GRID_SIZE; i++) {
     for(int j = 0; j < GRID_SIZE; j++) {
       env->grid_H[i][j] = 1.0f; 
@@ -1408,11 +1438,9 @@ void c_step(SoilEnv* env)
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
 
-  // for (int i = 0; i < 5; i++)
-  // {
-  //  simulate_step(env, 0.167f * 0.2f);
-  // }
-
+  // Single physics step per control action (no top-level sub-stepping for now).
+  // Soil erosion still sub-loops internally (see simulate_erosion, num_loops=3).
+  // Revisit if the main loop proves unstable once we run/test the sim.
   simulate_step(env, 0.167f);
 
   // get observations (reawards and terminals also seen here, since we're already doing some loops!)
