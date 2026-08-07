@@ -334,7 +334,7 @@ static inline void get_obs(SoilEnv* env)
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
       // if the selected env grid is within bounds of the sim region, grab the underlying map data
-      if (grid_i >= 0 && grid_i < GRID_SIZE && grid_j >= 0 && grid_j < GRID_SIZE)
+      if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
       {
         env->observations[h_obs_index] = (env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - dozer->position_z;
         env->observations[g_obs_index] = env->grid_G[grid_i][grid_j] - dozer->position_z;
@@ -434,11 +434,11 @@ static inline void update_chassis_pose(SoilEnv* env)
     float soil_height_left = 1.0f;
     float soil_height_right = 1.0f;
 
-    if (grid_index_left_x >= 0 && grid_index_left_x < GRID_SIZE && grid_index_left_y >= 0 && grid_index_left_y < GRID_SIZE)
+    if ((unsigned int)grid_index_left_x < GRID_SIZE && (unsigned int)grid_index_left_y < GRID_SIZE)
     {
       soil_height_left = env->grid_H[grid_index_left_x][grid_index_left_y] + env->grid_L[grid_index_left_x][grid_index_left_y];
     }
-    if (grid_index_right_x >= 0 && grid_index_right_x < GRID_SIZE && grid_index_right_y >= 0 && grid_index_right_y < GRID_SIZE)
+    if ((unsigned int)grid_index_right_x < GRID_SIZE && (unsigned int)grid_index_right_y < GRID_SIZE)
     {
       soil_height_right = env->grid_H[grid_index_right_x][grid_index_right_y] + env->grid_L[grid_index_right_x][grid_index_right_y];
     }
@@ -572,6 +572,36 @@ static inline void update_kinematics(SoilEnv* env)
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
+  struct {
+    int i, j;
+    float local_x, local_y;
+  } track_cells[200];
+  int num_track_cells = 0;
+
+  for (int i = min_i; i <= max_i; i++)
+  {
+    for (int j = min_j; j <= max_j; j++)
+    {
+      float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
+      float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
+      float local_x = dx * cos_y + dy * sin_y;
+      float local_y = -dx * sin_y + dy * cos_y;
+
+      if (fabsf(local_x) <= half_track_length &&
+          (fabsf(local_y - half_track_gauge) <= half_track_width ||
+           fabsf(local_y + half_track_gauge) <= half_track_width))
+      {
+        if (num_track_cells < 200) {
+          track_cells[num_track_cells].i = i;
+          track_cells[num_track_cells].j = j;
+          track_cells[num_track_cells].local_x = local_x;
+          track_cells[num_track_cells].local_y = local_y;
+          num_track_cells++;
+        }
+      }
+    }
+  }
+
   for (int iter = 0; iter < 3; iter++)
   {
     // 2. Determine Contact Area
@@ -579,29 +609,15 @@ static inline void update_kinematics(SoilEnv* env)
     float tan_pitch = tanf(dozer->angular_y);
     float tan_roll = tanf(dozer->angular_x);
 
-    for (int i = min_i; i <= max_i; i++)
+    for (int k = 0; k < num_track_cells; k++)
     {
-      for (int j = min_j; j <= max_j; j++)
+      int i = track_cells[k].i;
+      int j = track_cells[k].j;
+      float track_z = dozer->position_z + track_cells[k].local_x * tan_pitch + track_cells[k].local_y * tan_roll;
+      float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
+      if (soil_z >= track_z)
       {
-        float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
-        float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
-        float local_x = dx * cos_y + dy * sin_y;
-        float local_y = -dx * sin_y + dy * cos_y;
-
-        if (fabsf(local_x) <= half_track_length)
-        {
-          if (fabsf(local_y - half_track_gauge) <= half_track_width ||
-              fabsf(local_y + half_track_gauge) <= half_track_width)
-          {
-            // z-height of the track at this local position
-            float track_z = dozer->position_z + local_x * tan_pitch + local_y * tan_roll;
-            float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
-            if (soil_z >= track_z)
-            {
-              marked_area += cell_area;
-            }
-          }
-        }
+        marked_area += cell_area;
       }
     }
 
@@ -625,32 +641,20 @@ static inline void update_kinematics(SoilEnv* env)
     // 4. Apply compaction to marked cells
     if (compaction_rate > 0.0f)
     {
-      for (int i = min_i; i <= max_i; i++)
+      for (int k = 0; k < num_track_cells; k++)
       {
-        for (int j = min_j; j <= max_j; j++)
+        int i = track_cells[k].i;
+        int j = track_cells[k].j;
+        if (env->grid_L[i][j] < 0.001f) continue;
+        
+        float track_z = dozer->position_z + track_cells[k].local_x * tan_pitch + track_cells[k].local_y * tan_roll;
+        float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
+
+        if (soil_z >= track_z)
         {
-          if (env->grid_L[i][j] < 0.001f) continue;
-          float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
-          float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
-          float local_x = dx * cos_y + dy * sin_y;
-          float local_y = -dx * sin_y + dy * cos_y;
-
-          if (fabsf(local_x) <= half_track_length)
-          {
-            if (fabsf(local_y - half_track_gauge) <= half_track_width ||
-                fabsf(local_y + half_track_gauge) <= half_track_width)
-            {
-              float track_z = dozer->position_z + local_x * tan_pitch + local_y * tan_roll;
-              float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
-
-              if (soil_z >= track_z)
-              {
-                float compacted = env->grid_L[i][j] * compaction_rate;
-                env->grid_L[i][j] -= compacted;
-                env->grid_H[i][j] += compacted / env->swell_ratio;
-              }
-            }
-          }
+          float compacted = env->grid_L[i][j] * compaction_rate;
+          env->grid_L[i][j] -= compacted;
+          env->grid_H[i][j] += compacted / env->swell_ratio;
         }
       }
     }
@@ -872,7 +876,7 @@ static inline void interact_with_soil(SoilEnv* env)
 
   while (1)
   {
-    if (x0 >= 0 && x0 < GRID_SIZE && y0 >= 0 && y0 < GRID_SIZE)
+    if ((unsigned int)x0 < GRID_SIZE && (unsigned int)y0 < GRID_SIZE)
     {
       // Calculate the moment arm (local_y) and blade elevation at this specific grid cell
       float cell_m_x = (x0 + 0.5f) * CELL_SIZE;
@@ -923,7 +927,7 @@ static inline void interact_with_soil(SoilEnv* env)
       int f_grid_x = (int)(front_x / CELL_SIZE);
       int f_grid_y = (int)(front_y / CELL_SIZE);
 
-      if (f_grid_x >= 0 && f_grid_x < GRID_SIZE && f_grid_y >= 0 && f_grid_y < GRID_SIZE)
+      if ((unsigned int)f_grid_x < GRID_SIZE && (unsigned int)f_grid_y < GRID_SIZE)
       {
         float f_total_h = env->grid_H[f_grid_x][f_grid_y] + env->grid_L[f_grid_x][f_grid_y];
         float f_total_depth = f_total_h - section_blade_z;
@@ -962,7 +966,7 @@ static inline void interact_with_soil(SoilEnv* env)
 
       int dep_x = (int)(dep_global_x / CELL_SIZE);
       int dep_y = (int)(dep_global_y / CELL_SIZE);
-      if (dep_x >= 0 && dep_x < GRID_SIZE && dep_y >= 0 && dep_y < GRID_SIZE)
+      if ((unsigned int)dep_x < GRID_SIZE && (unsigned int)dep_y < GRID_SIZE)
       {
         env->grid_L[dep_x][dep_y] += dh;
       }
@@ -1056,24 +1060,53 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   float delta_L[EROSION_WIN][EROSION_WIN];  // accumulates symmetric slumping changes
   char  frozen[EROSION_WIN][EROSION_WIN];   // cells the machine sits on that must not slump
 
-  // Precompute the "frozen" mask once. A cell is frozen if it lies under the machine footprint on the
-  // non-working side of the blade (prevents soil slumping into the dozer). It depends only on the blade
-  // pose, which is fixed for the whole call, so hoisting it out of the hot 8-neighbor loop removes the
-  // per-neighbor trig/projection that dominated this function.
-  //   Frozen zone tracks push direction: behind the blade (over the chassis) when pushing forward so
-  //   the pile in front can slump; flipped to the front when backdragging so the dragged soil deposited
-  //   behind the blade is free to level out (smoothing).
-  for (int i = min_i; i <= max_i; i++)
+  memset(frozen, 0, sizeof(frozen));
+
+  float min_lx = (push_sign > 0.0f) ? -loader_length : 0.0f;
+  float max_lx = (push_sign > 0.0f) ? 0.0f : loader_length;
+  
+  float cx[4] = {min_lx, max_lx, max_lx, min_lx};
+  float cy[4] = {-half_bw, -half_bw, half_bw, half_bw};
+  
+  int frozen_min_i = max_i;
+  int frozen_max_i = min_i;
+  int frozen_min_j = max_j;
+  int frozen_max_j = min_j;
+
+  for (int c = 0; c < 4; c++) {
+    float wx = dozer->blade_x + cx[c] * cos_y - cy[c] * sin_y;
+    float wy = dozer->blade_y + cx[c] * sin_y + cy[c] * cos_y;
+    int gi = (int)(wx / CELL_SIZE);
+    int gj = (int)(wy / CELL_SIZE);
+    if (gi < frozen_min_i) frozen_min_i = gi;
+    if (gi > frozen_max_i) frozen_max_i = gi;
+    if (gj < frozen_min_j) frozen_min_j = gj;
+    if (gj > frozen_max_j) frozen_max_j = gj;
+  }
+  
+  frozen_min_i = clamp_idx(frozen_min_i - 1);
+  frozen_max_i = clamp_idx(frozen_max_i + 1);
+  frozen_min_j = clamp_idx(frozen_min_j - 1);
+  frozen_max_j = clamp_idx(frozen_max_j + 1);
+
+  if (frozen_min_i < min_i) frozen_min_i = min_i;
+  if (frozen_max_i > max_i) frozen_max_i = max_i;
+  if (frozen_min_j < min_j) frozen_min_j = min_j;
+  if (frozen_max_j > max_j) frozen_max_j = max_j;
+
+  for (int i = frozen_min_i; i <= frozen_max_i; i++)
   {
-    for (int j = min_j; j <= max_j; j++)
+    for (int j = frozen_min_j; j <= frozen_max_j; j++)
     {
       float dx_cell = (i + 0.5f) * CELL_SIZE - dozer->blade_x;
       float dy_cell = (j + 0.5f) * CELL_SIZE - dozer->blade_y;
       float local_x = dx_cell * cos_y + dy_cell * sin_y;
       float local_y = -dx_cell * sin_y + dy_cell * cos_y;
       float lx = local_x * push_sign;
-      frozen[i - base_i][j - base_j] =
-        (fabsf(local_y) <= half_bw && lx >= -loader_length && lx <= 0.0f) ? 1 : 0;
+      if (fabsf(local_y) <= half_bw && lx >= -loader_length && lx <= 0.0f)
+      {
+        frozen[i - base_i][j - base_j] = 1;
+      }
     }
   }
 
@@ -1084,84 +1117,115 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
     CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f
   };
 
+  int scan_min_i = min_i, scan_max_i = max_i;
+  int scan_min_j = min_j, scan_max_j = max_j;
+
   for (int iter = 0; iter < num_loops; iter++)  // loop 3 times
   {
+    int active_min_i = max_i;
+    int active_max_i = min_i;
+    int active_min_j = max_j;
+    int active_max_j = min_j;
     int any_loose = 0;
-    for (int i = min_i; i <= max_i; i++)  // snapshot loose + total height within the buffered area
+
+    for (int i = scan_min_i; i <= scan_max_i; i++)  // snapshot loose + total height within the scan area
     {
-      for (int j = min_j; j <= max_j; j++)
+      for (int j = scan_min_j; j <= scan_max_j; j++)
       {
         int li = i - base_i, lj = j - base_j;
         float L = env->grid_L[i][j];
         temp_L[li][lj] = L;
         temp_T[li][lj] = env->grid_H[i][j] + L;
         delta_L[li][lj] = 0.0f;
-        if (L > 1e-4f) any_loose = 1;
+        if (L > 1e-4f) {
+           any_loose = 1;
+           if (i < active_min_i) active_min_i = i;
+           if (i > active_max_i) active_max_i = i;
+           if (j < active_min_j) active_min_j = j;
+           if (j > active_max_j) active_max_j = j;
+        }
       }
     }
 
-    if (any_loose)  // nothing to slump if the window has no loose soil
+    if (!any_loose) break;  // nothing to slump, and nothing will slump in future iterations
+
+    // Slump only from active cells
+    int slump_min_i = (active_min_i > min_i) ? active_min_i : min_i + 1;
+    int slump_max_i = (active_max_i < max_i) ? active_max_i : max_i - 1;
+    int slump_min_j = (active_min_j > min_j) ? active_min_j : min_j + 1;
+    int slump_max_j = (active_max_j < max_j) ? active_max_j : max_j - 1;
+
+    for (int i = slump_min_i; i <= slump_max_i; i++)
     {
-      for (int i = min_i + 1; i < max_i; i++)  // start looking at our buffered pixels
+      for (int j = slump_min_j; j <= slump_max_j; j++)
       {
-        for (int j = min_j + 1; j < max_j; j++)
+        int li = i - base_i, lj = j - base_j;
+        float L_ij = temp_L[li][lj];
+        if (L_ij <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
+        float total_h = temp_T[li][lj];  // get total height at this pixel
+
+        float L_val = L_ij;
+        if (L_val < 1e-5f) L_val = 1e-5f;
+        float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
+        float t_limit = tan_phi;
+
+        if (K >= 1e-5f)
         {
-          int li = i - base_i, lj = j - base_j;
-          float L_ij = temp_L[li][lj];
-          if (L_ij <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
-          float total_h = temp_T[li][lj];  // get total height at this pixel
-
-          float L_val = L_ij;
-          if (L_val < 1e-5f) L_val = 1e-5f;
-          float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
-          float t_limit = tan_phi;
-
-          if (K >= 1e-5f)
+          float disc = 1.0f - 4.0f * K * (tan_phi + K);
+          if (disc > 0.0f)
           {
-            float disc = 1.0f - 4.0f * K * (tan_phi + K);
-            if (disc > 0.0f)
-            {
-              t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
-            }
-            else
-            {
-              t_limit = 1e9f;  // basically infinity
-            }
+            t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
           }
-
-          for (int d = 0; d < 8; d++)  // look through the 8 surrounding pixels
+          else
           {
-            int lni = li + dx[d], lnj = lj + dy[d];
-            if (frozen[lni][lnj]) continue;  // don't let soil slump into the machine footprint
+            t_limit = 1e9f;  // basically infinity
+          }
+        }
 
-            float dH = total_h - temp_T[lni][lnj];
-            if (dH <= 0.0f) continue;  // only shed to lower neighbors
+        for (int d = 0; d < 8; d++)  // look through the 8 surrounding pixels
+        {
+          int lni = li + dx[d], lnj = lj + dy[d];
+          if (frozen[lni][lnj]) continue;  // don't let soil slump into the machine footprint
 
-            float dist = dists[d];
-            float t = dH / dist;
+          float dH = total_h - temp_T[lni][lnj];
+          if (dH <= 0.0f) continue;  // only shed to lower neighbors
 
-            if (t > t_limit)
-            {
-              float slip = (t - t_limit) * dist * 0.2f;
-              // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
-              if (slip > L_ij / 8.0f) slip = L_ij / 8.0f;
-              delta_L[li][lj] -= slip;
-              delta_L[lni][lnj] += slip;
-              // We DO NOT update total_h or temp_L here to maintain symmetry
-            }
+          float dist = dists[d];
+          float t = dH / dist;
+
+          if (t > t_limit)
+          {
+            float slip = (t - t_limit) * dist * 0.2f;
+            // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
+            if (slip > L_ij / 8.0f) slip = L_ij / 8.0f;
+            delta_L[li][lj] -= slip;
+            delta_L[lni][lnj] += slip;
+            // We DO NOT update total_h or temp_L here to maintain symmetry
           }
         }
       }
     }
 
-    for (int i = min_i; i <= max_i; i++)
+    // Apply delta_L only in the region that could have been modified (active bounds + 1)
+    int apply_min_i = (active_min_i > min_i) ? active_min_i - 1 : min_i;
+    int apply_max_i = (active_max_i < max_i) ? active_max_i + 1 : max_i;
+    int apply_min_j = (active_min_j > min_j) ? active_min_j - 1 : min_j;
+    int apply_max_j = (active_max_j < max_j) ? active_max_j + 1 : max_j;
+
+    for (int i = apply_min_i; i <= apply_max_i; i++)
     {
-      for (int j = min_j; j <= max_j; j++)
+      for (int j = apply_min_j; j <= apply_max_j; j++)
       {
         env->grid_L[i][j] += delta_L[i - base_i][j - base_j];
         if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f; // Prevent negative loose soil
       }
     }
+
+    // Shrink the scan window for the next iteration to the apply window.
+    scan_min_i = apply_min_i;
+    scan_max_i = apply_max_i;
+    scan_min_j = apply_min_j;
+    scan_max_j = apply_max_j;
   }
 }
 
