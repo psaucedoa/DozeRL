@@ -362,14 +362,25 @@ static inline void precompute_FEE(SoilEnv* env, float alpha)
 
   float rho = dozer->blade_rake_angle;
   float beta = (PI / 4.0f) - (env->soil_phi / 2.0f);
-  float eta = env->soil_delta + rho + env->soil_phi + beta;
+  // clamp beta/rho to avoid sin/tan singularities when phi→90° or rake→0°
+  float rho_eff = fmaxf(rho, 5.0f * PI / 180.0f);
+  float beta_eff = fmaxf(beta, 5.0f * PI / 180.0f);
+  float eta = env->soil_delta + rho_eff + env->soil_phi + beta_eff;
   float sin_eta = sinf(eta);
   if (fabsf(sin_eta) < 1e-6f) sin_eta = 1e-6f;
+  float sin_beta = sinf(beta_eff);
+  if (fabsf(sin_beta) < 1e-6f) sin_beta = 1e-6f;
+  float sin_rho = sinf(rho_eff);
+  if (fabsf(sin_rho) < 1e-6f) sin_rho = 1e-6f;
+  float tan_rho = tanf(rho_eff);
+  if (fabsf(tan_rho) < 1e-6f) tan_rho = 1e-6f;
+  float tan_beta = tanf(beta_eff);
+  if (fabsf(tan_beta) < 1e-6f) tan_beta = 1e-6f;
 
-  env->N_gamma = ((1.0f / tanf(rho)) + (1.0f / tanf(beta))) * sinf(alpha + env->soil_phi + beta) / (2.0f * sin_eta);
-  env->N_Q = sinf(alpha + env->soil_phi + beta) / sin_eta;
-  env->N_c = cosf(env->soil_phi) / (sinf(beta) * sin_eta);
-  env->N_ca = -cosf(rho + env->soil_phi + beta) / (sinf(rho) * sin_eta);
+  env->N_gamma = ((1.0f / tan_rho) + (1.0f / tan_beta)) * sinf(alpha + env->soil_phi + beta_eff) / (2.0f * sin_eta);
+  env->N_Q = sinf(alpha + env->soil_phi + beta_eff) / sin_eta;
+  env->N_c = cosf(env->soil_phi) / (sin_beta * sin_eta);
+  env->N_ca = -cosf(rho_eff + env->soil_phi + beta_eff) / (sin_rho * sin_eta);
 }
 
 static inline float calculate_max_traction(SoilEnv* env)
