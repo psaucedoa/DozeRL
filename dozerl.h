@@ -138,7 +138,6 @@ typedef struct
   float max_torque_lift_arm;
   float max_torque_pitch;
   float max_torque_roll;
-  float max_torque_rotational;
   float max_force_track;  // (N) max hydraulic thrust one track can produce; linear & yaw both derive from this
   float virtual_lift_arm_damping;
   float blade_pitch_damping;
@@ -275,43 +274,6 @@ static inline void quat_rotate(const float q[4], const float v[3], float out[3])
   out[2] = vz + w * tz + (qx * ty - qy * tx);
 }
 
-// Helper: Apply rotation
-static inline void rotate(float input[6], const float rotation[3])
-{
-  // 1. Rotate position
-  float q_rot[4];
-  euler_to_quat(rotation[0], rotation[1], rotation[2], q_rot);
-
-  float v[3] = {input[0], input[1], input[2]};
-  float v_out[3];
-  quat_rotate(q_rot, v, v_out);
-
-  input[0] = v_out[0];
-  input[1] = v_out[1];
-  input[2] = v_out[2];
-
-  // 2. Rotate orientation
-  float q_input[4];
-  euler_to_quat(input[3], input[4], input[5], q_input);
-
-  float q_comb[4];
-  quat_multiply(q_rot, q_input, q_comb);
-
-  float rpy[3];
-  quat_to_euler(q_comb, rpy);
-
-  input[3] = rpy[0];
-  input[4] = rpy[1];
-  input[5] = rpy[2];
-}
-
-static inline void translate(float input[6], const float translation[3])
-{
-  input[0] += translation[0];
-  input[1] += translation[1];
-  input[2] += translation[2];
-}
-
 // Helper: Thread-safe random float [0, 1]
 static inline float rand_f(unsigned int* seed)
 {
@@ -334,7 +296,7 @@ static inline void get_obs(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // get observations. First [0-9] are proprioceptive, rest are map (2x250)
+  // get observations. First [0-10] are proprioceptive (10 + noisy surcharge), rest are map (2x50x50)
   env->observations[0]  = dozer->pos_virtual_lift_arm;
   env->observations[1]  = dozer->pos_blade_pitch;
   env->observations[2]  = dozer->pos_blade_roll;
@@ -345,7 +307,15 @@ static inline void get_obs(SoilEnv* env)
   env->observations[7]  = dozer->vel_blade_pitch;
   env->observations[8]  = dozer->vel_blade_roll;
   env->observations[9]  = dozer->vel_blade_yaw;  // this one, however, may not be necessary..?
-  int obs_offset = 10;  // for index mapping later on
+  // Noisy surcharge: real platform would estimate from cylinder pressure,
+  // so model as ±20% multiplicative + ±500N additive, normalized to ~1.0 ≈ 15kN loaded
+  {
+    float q = dozer->blade_surcharge_Q;
+    float q_noisy = q * (1.0f + (rand_f(&env->rng) - 0.5f) * 0.4f) + (rand_f(&env->rng) - 0.5f) * 1000.0f;
+    if (q_noisy < 0.0f) q_noisy = 0.0f;
+    env->observations[10] = q_noisy / 15000.0f; // 0=empty, ~1=full blade
+  }
+  int obs_offset = 11;  // 11 proprio (10 + noisy surcharge) before spatial
   // onto map observations
   // first we compute cos & sin for the vehicle's current yaw
   float cos_y = cosf(dozer->angular_z);
@@ -364,15 +334,15 @@ static inline void get_obs(SoilEnv* env)
 
     for (int j = 0; j < SPATIAL_OBS_SIZE; j++)
     {
-      int grid_i = (int)(row_grid_x - j * sin_y);
-      int grid_j = (int)(row_grid_y + j * cos_y);
+      int grid_i = (int)floorf(row_grid_x - j * sin_y);
+      int grid_j = (int)floorf(row_grid_y + j * cos_y);
 
       // here we do some index mapping from 2d grid coords -> 1d obs array shape
       int h_obs_index = (i * SPATIAL_OBS_SIZE) + j + obs_offset;
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
       // if the selected env grid is within bounds of the sim region, grab the underlying map data
-      if (grid_i >= 0 && grid_i < GRID_SIZE && grid_j >= 0 && grid_j < GRID_SIZE)
+      if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
       {
         env->observations[h_obs_index] = (env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - dozer->position_z;
         env->observations[g_obs_index] = env->grid_G[grid_i][grid_j] - dozer->position_z;
@@ -464,19 +434,19 @@ static inline void update_chassis_pose(SoilEnv* env)
     float point_right_x = dozer->position_x + local_x * cos_y + half_track_gauge * sin_y;
     float point_right_y = dozer->position_y + local_x * sin_y - half_track_gauge * cos_y;
 
-    int grid_index_left_x = (int)(point_left_x / CELL_SIZE);
-    int grid_index_left_y = (int)(point_left_y / CELL_SIZE);
-    int grid_index_right_x = (int)(point_right_x / CELL_SIZE);
-    int grid_index_right_y = (int)(point_right_y / CELL_SIZE);
+    int grid_index_left_x = (int)floorf(point_left_x / CELL_SIZE);
+    int grid_index_left_y = (int)floorf(point_left_y / CELL_SIZE);
+    int grid_index_right_x = (int)floorf(point_right_x / CELL_SIZE);
+    int grid_index_right_y = (int)floorf(point_right_y / CELL_SIZE);
 
     float soil_height_left = 1.0f;
     float soil_height_right = 1.0f;
 
-    if (grid_index_left_x >= 0 && grid_index_left_x < GRID_SIZE && grid_index_left_y >= 0 && grid_index_left_y < GRID_SIZE)
+    if ((unsigned int)grid_index_left_x < GRID_SIZE && (unsigned int)grid_index_left_y < GRID_SIZE)
     {
       soil_height_left = env->grid_H[grid_index_left_x][grid_index_left_y] + env->grid_L[grid_index_left_x][grid_index_left_y];
     }
-    if (grid_index_right_x >= 0 && grid_index_right_x < GRID_SIZE && grid_index_right_y >= 0 && grid_index_right_y < GRID_SIZE)
+    if ((unsigned int)grid_index_right_x < GRID_SIZE && (unsigned int)grid_index_right_y < GRID_SIZE)
     {
       soil_height_right = env->grid_H[grid_index_right_x][grid_index_right_y] + env->grid_L[grid_index_right_x][grid_index_right_y];
     }
@@ -543,12 +513,13 @@ static inline void forward_kinematics(SoilEnv* env)
   float q_u_joint_local[4];
   quat_multiply(q_pitch_local, q_u_joint_rel, q_u_joint_local);
 
-  // 4. Blade edge (local in chassis frame)
-  float q_blade_rel[4];
-  euler_to_quat(dozer->pos_blade_roll, -theta_rake, dozer->pos_blade_yaw, q_blade_rel);
+  // 4. Blade edge (local in chassis frame) — rake is a fixed pitch of the
+  // blade relative to the u-joint, so apply roll+yaw first (q_u_joint) then rake
+  float q_rake_rel[4];
+  euler_to_quat(0.0f, -theta_rake, 0.0f, q_rake_rel);
 
   float q_blade_local[4];
-  quat_multiply(q_pitch_local, q_blade_rel, q_blade_local);
+  quat_multiply(q_u_joint_local, q_rake_rel, q_blade_local);
 
   float blade_edge_vector[3] = {0.0f, 0.0f, dozer->blade_height * -0.5f};
   float blade_edge_offset[3];
@@ -560,53 +531,8 @@ static inline void forward_kinematics(SoilEnv* env)
     u_joint_local_pos[2] + blade_edge_offset[2]
   };
 
-  // 5. Transform all joints from chassis local frame to world frame using dozer->q
+  // 5. Transform blade edge from chassis local frame to world frame using dozer->q
   float chassis_pos[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
-
-  // Lift arm joint world pose
-  float lift_arm_world_pos[3];
-  quat_rotate(dozer->q, lift_arm_local_pos, lift_arm_world_pos);
-  dozer->_lift_arm_joint_pose[0] = lift_arm_world_pos[0] + chassis_pos[0];
-  dozer->_lift_arm_joint_pose[1] = lift_arm_world_pos[1] + chassis_pos[1];
-  dozer->_lift_arm_joint_pose[2] = lift_arm_world_pos[2] + chassis_pos[2];
-
-  float q_arm_world[4];
-  quat_multiply(dozer->q, q_arm_local, q_arm_world);
-  float rpy_arm[3];
-  quat_to_euler(q_arm_world, rpy_arm);
-  dozer->_lift_arm_joint_pose[3] = rpy_arm[0];
-  dozer->_lift_arm_joint_pose[4] = rpy_arm[1];
-  dozer->_lift_arm_joint_pose[5] = rpy_arm[2];
-
-  // Pitch joint world pose
-  float pitch_joint_world_pos[3];
-  quat_rotate(dozer->q, pitch_joint_local_pos, pitch_joint_world_pos);
-  dozer->_pitch_joint_pose[0] = pitch_joint_world_pos[0] + chassis_pos[0];
-  dozer->_pitch_joint_pose[1] = pitch_joint_world_pos[1] + chassis_pos[1];
-  dozer->_pitch_joint_pose[2] = pitch_joint_world_pos[2] + chassis_pos[2];
-
-  float q_pitch_world[4];
-  quat_multiply(dozer->q, q_pitch_local, q_pitch_world);
-  float rpy_pitch[3];
-  quat_to_euler(q_pitch_world, rpy_pitch);
-  dozer->_pitch_joint_pose[3] = rpy_pitch[0];
-  dozer->_pitch_joint_pose[4] = rpy_pitch[1];
-  dozer->_pitch_joint_pose[5] = rpy_pitch[2];
-
-  // U-joint world pose
-  float u_joint_world_pos[3];
-  quat_rotate(dozer->q, u_joint_local_pos, u_joint_world_pos);
-  dozer->_u_joint_pose[0] = u_joint_world_pos[0] + chassis_pos[0];
-  dozer->_u_joint_pose[1] = u_joint_world_pos[1] + chassis_pos[1];
-  dozer->_u_joint_pose[2] = u_joint_world_pos[2] + chassis_pos[2];
-
-  float q_u_joint_world[4];
-  quat_multiply(dozer->q, q_u_joint_local, q_u_joint_world);
-  float rpy_u_joint[3];
-  quat_to_euler(q_u_joint_world, rpy_u_joint);
-  dozer->_u_joint_pose[3] = rpy_u_joint[0];
-  dozer->_u_joint_pose[4] = rpy_u_joint[1];
-  dozer->_u_joint_pose[5] = rpy_u_joint[2];
 
   // Blade edge world pose
   float blade_edge_world_pos[3];
@@ -645,44 +571,62 @@ static inline void update_kinematics(SoilEnv* env)
   // 1. Initial pose update before compaction iterations
   update_chassis_pose(env);
 
+  // Contact-footprint bounds are invariant across the compaction iterations (position_x/y don't change
+  // here -- only z/pitch/roll do), so compute them once instead of every iteration.
+  int margin = (int)((half_track_length + 1.0f) / CELL_SIZE);
+  int center_i = (int)floorf(dozer->position_x / CELL_SIZE);
+  int min_i = clamp_idx(center_i - margin);
+  int max_i = clamp_idx(center_i + margin);
+  int center_j = (int)floorf(dozer->position_y / CELL_SIZE);
+  int min_j = clamp_idx(center_j - margin);
+  int max_j = clamp_idx(center_j + margin);
+
+  struct {
+    int i, j;
+    float local_x, local_y;
+  } track_cells[200];
+  int num_track_cells = 0;
+
+  for (int i = min_i; i <= max_i; i++)
+  {
+    for (int j = min_j; j <= max_j; j++)
+    {
+      float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
+      float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
+      float local_x = dx * cos_y + dy * sin_y;
+      float local_y = -dx * sin_y + dy * cos_y;
+
+      if (fabsf(local_x) <= half_track_length &&
+          (fabsf(local_y - half_track_gauge) <= half_track_width ||
+           fabsf(local_y + half_track_gauge) <= half_track_width))
+      {
+        if (num_track_cells < 200) {
+          track_cells[num_track_cells].i = i;
+          track_cells[num_track_cells].j = j;
+          track_cells[num_track_cells].local_x = local_x;
+          track_cells[num_track_cells].local_y = local_y;
+          num_track_cells++;
+        }
+      }
+    }
+  }
+
   for (int iter = 0; iter < 3; iter++)
   {
     // 2. Determine Contact Area
-    int margin = (int)((half_track_length + 1.0f) / CELL_SIZE);
-    int center_i = (int)(dozer->position_x / CELL_SIZE);
-    int min_i = clamp_idx(center_i - margin);
-    int max_i = clamp_idx(center_i + margin);
-    int center_j = (int)(dozer->position_y / CELL_SIZE);
-    int min_j = clamp_idx(center_j - margin);
-    int max_j = clamp_idx(center_j + margin);
-
     float marked_area = 0.0f;
     float tan_pitch = tanf(dozer->angular_y);
     float tan_roll = tanf(dozer->angular_x);
 
-    for (int i = min_i; i <= max_i; i++)
+    for (int k = 0; k < num_track_cells; k++)
     {
-      for (int j = min_j; j <= max_j; j++)
+      int i = track_cells[k].i;
+      int j = track_cells[k].j;
+      float track_z = dozer->position_z + track_cells[k].local_x * tan_pitch + track_cells[k].local_y * tan_roll;
+      float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
+      if (soil_z >= track_z)
       {
-        float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
-        float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
-        float local_x = dx * cos_y + dy * sin_y;
-        float local_y = -dx * sin_y + dy * cos_y;
-
-        if (fabsf(local_x) <= half_track_length)
-        {
-          if (fabsf(local_y - half_track_gauge) <= half_track_width ||
-              fabsf(local_y + half_track_gauge) <= half_track_width)
-          {
-            // z-height of the track at this local position
-            float track_z = dozer->position_z + local_x * tan_pitch + local_y * tan_roll;
-            float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
-            if (soil_z >= track_z)
-            {
-              marked_area += cell_area;
-            }
-          }
-        }
+        marked_area += cell_area;
       }
     }
 
@@ -706,32 +650,20 @@ static inline void update_kinematics(SoilEnv* env)
     // 4. Apply compaction to marked cells
     if (compaction_rate > 0.0f)
     {
-      for (int i = min_i; i <= max_i; i++)
+      for (int k = 0; k < num_track_cells; k++)
       {
-        for (int j = min_j; j <= max_j; j++)
+        int i = track_cells[k].i;
+        int j = track_cells[k].j;
+        if (env->grid_L[i][j] < 0.001f) continue;
+        
+        float track_z = dozer->position_z + track_cells[k].local_x * tan_pitch + track_cells[k].local_y * tan_roll;
+        float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
+
+        if (soil_z >= track_z)
         {
-          if (env->grid_L[i][j] < 0.001f) continue;
-          float dx = ((i + 0.5f) * CELL_SIZE) - dozer->position_x;
-          float dy = ((j + 0.5f) * CELL_SIZE) - dozer->position_y;
-          float local_x = dx * cos_y + dy * sin_y;
-          float local_y = -dx * sin_y + dy * cos_y;
-
-          if (fabsf(local_x) <= half_track_length)
-          {
-            if (fabsf(local_y - half_track_gauge) <= half_track_width ||
-                fabsf(local_y + half_track_gauge) <= half_track_width)
-            {
-              float track_z = dozer->position_z + local_x * tan_pitch + local_y * tan_roll;
-              float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
-
-              if (soil_z >= track_z)
-              {
-                float compacted = env->grid_L[i][j] * compaction_rate;
-                env->grid_L[i][j] -= compacted;
-                env->grid_H[i][j] += compacted / env->swell_ratio;
-              }
-            }
-          }
+          float compacted = env->grid_L[i][j] * compaction_rate;
+          env->grid_L[i][j] -= compacted;
+          env->grid_H[i][j] += compacted / env->swell_ratio;
         }
       }
     }
@@ -740,8 +672,9 @@ static inline void update_kinematics(SoilEnv* env)
     update_chassis_pose(env);
   }
 
-  // update global blade coordinates
-  forward_kinematics(env);
+  // NOTE: blade forward_kinematics is intentionally NOT called here. simulate_step() updates the joint
+  // positions after this function and then calls forward_kinematics() once, so computing the blade pose
+  // here (from stale joint angles) would just be overwritten -- it was redundant work every step.
 }
 
 static inline void update_chassis_velocity(SoilEnv* env, float dt) {
@@ -878,14 +811,13 @@ static inline float calculate_FEE_column(SoilEnv* env, float hard_depth, float t
 }
 
 
-static inline void interact_with_soil(SoilEnv* env, float dt)
+static inline void interact_with_soil(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
   float total_force = 0.0f;
   float total_yaw_moment = 0.0f;
   float total_roll_moment = 0.0f;
-  float total_vol_cut = 0.0f;
 
   float half_w = dozer->blade_width / 2.0f;
 
@@ -908,10 +840,10 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
   float end_m_y = dozer->blade_y - y_axis_world[1] * half_w;
 
   // 3. Convert to grid indices
-  int x0 = (int)(start_m_x / CELL_SIZE);
-  int y0 = (int)(start_m_y / CELL_SIZE);
-  int x1 = (int)(end_m_x / CELL_SIZE);
-  int y1 = (int)(end_m_y / CELL_SIZE);
+  int x0 = (int)floorf(start_m_x / CELL_SIZE);
+  int y0 = (int)floorf(start_m_y / CELL_SIZE);
+  int x1 = (int)floorf(end_m_x / CELL_SIZE);
+  int y1 = (int)floorf(end_m_y / CELL_SIZE);
 
   int dx_i = (x1 > x0) ? (x1 - x0) : (x0 - x1);
   int dy_i = (y1 > y0) ? (y1 - y0) : (y0 - y1);
@@ -953,7 +885,7 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
 
   while (1)
   {
-    if (x0 >= 0 && x0 < GRID_SIZE && y0 >= 0 && y0 < GRID_SIZE)
+    if ((unsigned int)x0 < GRID_SIZE && (unsigned int)y0 < GRID_SIZE)
     {
       // Calculate the moment arm (local_y) and blade elevation at this specific grid cell
       float cell_m_x = (x0 + 0.5f) * CELL_SIZE;
@@ -990,8 +922,6 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
         }
       }
 
-      total_vol_cut += cell_cut_vol;
-
       if (num_cells < 100)
       {
         visited_x[num_cells] = x0;
@@ -1003,10 +933,10 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       // 4. Calculate FEE force on the unyielding soil 1 cell directly in front
       float front_x = cell_m_x + CELL_SIZE * fwd_dir_x;
       float front_y = cell_m_y + CELL_SIZE * fwd_dir_y;
-      int f_grid_x = (int)(front_x / CELL_SIZE);
-      int f_grid_y = (int)(front_y / CELL_SIZE);
+      int f_grid_x = (int)floorf(front_x / CELL_SIZE);
+      int f_grid_y = (int)floorf(front_y / CELL_SIZE);
 
-      if (f_grid_x >= 0 && f_grid_x < GRID_SIZE && f_grid_y >= 0 && f_grid_y < GRID_SIZE)
+      if ((unsigned int)f_grid_x < GRID_SIZE && (unsigned int)f_grid_y < GRID_SIZE)
       {
         float f_total_h = env->grid_H[f_grid_x][f_grid_y] + env->grid_L[f_grid_x][f_grid_y];
         float f_total_depth = f_total_h - section_blade_z;
@@ -1043,9 +973,9 @@ static inline void interact_with_soil(SoilEnv* env, float dt)
       float dep_global_x = (cx + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_x;
       float dep_global_y = (cy + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_y;
 
-      int dep_x = (int)(dep_global_x / CELL_SIZE);
-      int dep_y = (int)(dep_global_y / CELL_SIZE);
-      if (dep_x >= 0 && dep_x < GRID_SIZE && dep_y >= 0 && dep_y < GRID_SIZE)
+      int dep_x = (int)floorf(dep_global_x / CELL_SIZE);
+      int dep_y = (int)floorf(dep_global_y / CELL_SIZE);
+      if ((unsigned int)dep_x < GRID_SIZE && (unsigned int)dep_y < GRID_SIZE)
       {
         env->grid_L[dep_x][dep_y] += dh;
       }
@@ -1109,15 +1039,15 @@ static inline void update_joint_pos(SoilEnv* env, float dt)
   if (dozer->pos_blade_roll > dozer->pos_blade_roll_max) dozer->pos_blade_roll = dozer->pos_blade_roll_max;
 }
 
-static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
+static inline void simulate_erosion(SoilEnv* env, const int num_loops)
 {
   Dozer* dozer = &env->dozer;
 
   int margin = EROSION_MARGIN;  // number of cells we buffer about the blade (~4.0m at CELL_SIZE=0.2)
-  int center_i = (int)(dozer->blade_x / CELL_SIZE);  // get the ith cell location of the blade
+  int center_i = (int)floorf(dozer->blade_x / CELL_SIZE);  // get the ith cell location of the blade
   int min_i = clamp_idx(center_i - margin);  // use our buffer to find the min ith cell
   int max_i = clamp_idx(center_i + margin);  // same but for max
-  int center_j = (int)(dozer->blade_y / CELL_SIZE);  // repeat last three but for jth cells
+  int center_j = (int)floorf(dozer->blade_y / CELL_SIZE);  // repeat last three but for jth cells
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
@@ -1127,105 +1057,185 @@ static inline void simulate_erosion(SoilEnv* env, float dt, const int num_loops)
   int base_i = center_i - margin;
   int base_j = center_j - margin;
 
-  // float loader_length = dozer->track_length + 1.0f; // rough approximation
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
-
-  float temp_L[EROSION_WIN][EROSION_WIN];   // loose-soil snapshot for the blade window
-  float delta_L[EROSION_WIN][EROSION_WIN];  // accumulates symmetric slumping changes
+  float half_bw = dozer->blade_width * 0.5f;
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
   float push_sign = dozer->last_push_sign;  // set in interact_with_soil() earlier this step
 
+  float temp_L[EROSION_WIN][EROSION_WIN];   // loose-soil snapshot for the blade window
+  float temp_T[EROSION_WIN][EROSION_WIN];   // total-height snapshot (grid_H + loose); avoids re-reading grid_H
+  float delta_L[EROSION_WIN][EROSION_WIN];  // accumulates symmetric slumping changes
+  char  frozen[EROSION_WIN][EROSION_WIN];   // cells the machine sits on that must not slump
+
+  memset(frozen, 0, sizeof(frozen));
+
+  float min_lx = (push_sign > 0.0f) ? -loader_length : 0.0f;
+  float max_lx = (push_sign > 0.0f) ? 0.0f : loader_length;
+  
+  float cx[4] = {min_lx, max_lx, max_lx, min_lx};
+  float cy[4] = {-half_bw, -half_bw, half_bw, half_bw};
+  
+  int frozen_min_i = max_i;
+  int frozen_max_i = min_i;
+  int frozen_min_j = max_j;
+  int frozen_max_j = min_j;
+
+  for (int c = 0; c < 4; c++) {
+    float wx = dozer->blade_x + cx[c] * cos_y - cy[c] * sin_y;
+    float wy = dozer->blade_y + cx[c] * sin_y + cy[c] * cos_y;
+    int gi = (int)floorf(wx / CELL_SIZE);
+    int gj = (int)floorf(wy / CELL_SIZE);
+    if (gi < frozen_min_i) frozen_min_i = gi;
+    if (gi > frozen_max_i) frozen_max_i = gi;
+    if (gj < frozen_min_j) frozen_min_j = gj;
+    if (gj > frozen_max_j) frozen_max_j = gj;
+  }
+  
+  frozen_min_i = clamp_idx(frozen_min_i - 1);
+  frozen_max_i = clamp_idx(frozen_max_i + 1);
+  frozen_min_j = clamp_idx(frozen_min_j - 1);
+  frozen_max_j = clamp_idx(frozen_max_j + 1);
+
+  if (frozen_min_i < min_i) frozen_min_i = min_i;
+  if (frozen_max_i > max_i) frozen_max_i = max_i;
+  if (frozen_min_j < min_j) frozen_min_j = min_j;
+  if (frozen_max_j > max_j) frozen_max_j = max_j;
+
+  for (int i = frozen_min_i; i <= frozen_max_i; i++)
+  {
+    for (int j = frozen_min_j; j <= frozen_max_j; j++)
+    {
+      float dx_cell = (i + 0.5f) * CELL_SIZE - dozer->blade_x;
+      float dy_cell = (j + 0.5f) * CELL_SIZE - dozer->blade_y;
+      float local_x = dx_cell * cos_y + dy_cell * sin_y;
+      float local_y = -dx_cell * sin_y + dy_cell * cos_y;
+      float lx = local_x * push_sign;
+      if (fabsf(local_y) <= half_bw && lx >= -loader_length && lx <= 0.0f)
+      {
+        frozen[i - base_i][j - base_j] = 1;
+      }
+    }
+  }
+
+  static const int dx[8] = {1, -1, 0, 0, 1, 1, -1, -1};  // 8 surrounding pixel locations
+  static const int dy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+  static const float dists[8] = {
+    CELL_SIZE, CELL_SIZE, CELL_SIZE, CELL_SIZE,
+    CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f, CELL_SIZE * 1.41421356f
+  };
+
+  int scan_min_i = min_i, scan_max_i = max_i;
+  int scan_min_j = min_j, scan_max_j = max_j;
+
   for (int iter = 0; iter < num_loops; iter++)  // loop 3 times
   {
-    for (int i = min_i; i <= max_i; i++)  // copy over values within out buffered area
+    int active_min_i = max_i;
+    int active_max_i = min_i;
+    int active_min_j = max_j;
+    int active_max_j = min_j;
+    int any_loose = 0;
+
+    for (int i = scan_min_i; i <= scan_max_i; i++)  // snapshot loose + total height within the scan area
     {
-      for (int j = min_j; j <= max_j; j++)
+      for (int j = scan_min_j; j <= scan_max_j; j++)
       {
-        temp_L[i - base_i][j - base_j] = env->grid_L[i][j];
-        delta_L[i - base_i][j - base_j] = 0.0f;
+        int li = i - base_i, lj = j - base_j;
+        float L = env->grid_L[i][j];
+        temp_L[li][lj] = L;
+        temp_T[li][lj] = env->grid_H[i][j] + L;
+        delta_L[li][lj] = 0.0f;
+        if (L > 1e-4f) {
+           any_loose = 1;
+           if (i < active_min_i) active_min_i = i;
+           if (i > active_max_i) active_max_i = i;
+           if (j < active_min_j) active_min_j = j;
+           if (j > active_max_j) active_max_j = j;
+        }
       }
     }
 
-    int dx[] = {1, -1, 0, 0, 1, 1, -1, -1};  // 8 surrounding pixel locations
-    int dy[] = {0, 0, 1, -1, 1, -1, 1, -1};
+    if (!any_loose) break;  // nothing to slump, and nothing will slump in future iterations
 
-    for (int i = min_i + 1; i < max_i; i++)  // start looking at our buffered pixels
+    // Slump only from active cells
+    int slump_min_i = (active_min_i > min_i) ? active_min_i : min_i + 1;
+    int slump_max_i = (active_max_i < max_i) ? active_max_i : max_i - 1;
+    int slump_min_j = (active_min_j > min_j) ? active_min_j : min_j + 1;
+    int slump_max_j = (active_max_j < max_j) ? active_max_j : max_j - 1;
+
+    for (int i = slump_min_i; i <= slump_max_i; i++)
     {
-      for (int j = min_j + 1; j < max_j; j++)
+      for (int j = slump_min_j; j <= slump_max_j; j++)
       {
-        float L_ij = temp_L[i - base_i][j - base_j];
+        int li = i - base_i, lj = j - base_j;
+        float L_ij = temp_L[li][lj];
         if (L_ij <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
-        float total_h = env->grid_H[i][j] + L_ij;  // get total height at this pixel
+        if (frozen[li][lj]) continue;  // don't let soil slump *from* the machine footprint
+        float total_h = temp_T[li][lj];  // get total height at this pixel
 
-        for(int d=0; d<8; d++)  // look through the 8 surrounding pixels
+        float L_val = L_ij;
+        if (L_val < 1e-5f) L_val = 1e-5f;
+        float K = env->soil_c / (env->soil_gamma * L_val);
+        float t_limit = tan_phi;
+
+        if (K >= 1e-5f)
         {
-          int ni = i + dx[d], nj = j + dy[d];  // get the surrounding pixel index relative to the current pixel
-
-          float cell_x = (ni + 0.5f) * CELL_SIZE;  // get the surrounding pixel diff location in meters
-          float cell_y = (nj + 0.5f) * CELL_SIZE;
-
-          float dx_cell = cell_x - dozer->blade_x;
-          float dy_cell = cell_y - dozer->blade_y;
-          float local_x = dx_cell * cos_y + dy_cell * sin_y;  // get the surrounding pixel in local coords
-          float local_y = -dx_cell * sin_y + dy_cell * cos_y;
-
-          if (fabsf(local_y) <= dozer->blade_width / 2.0f)  // if this pixel is under the vehicle, don't bother
+          float disc = 1.0f - 4.0f * K * (tan_phi + K);
+          if (disc > 0.0f)
           {
-            // Frozen zone tracks push direction: behind the blade (over the chassis) when pushing
-            // forward so the pile in front can slump; flipped to the front when backdragging so the
-            // dragged soil deposited behind the blade is free to level out (smoothing).
-            if (local_x * push_sign >= -loader_length && local_x * push_sign <= 0.0f) continue; // prevent soil falling into the dozer
+            t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
           }
-
-          float neighbor_total_h = env->grid_H[ni][nj] + temp_L[ni - base_i][nj - base_j];  // get total height of surrounding pixel
-          float dH = total_h - neighbor_total_h;
-          float dist = (d < 4) ? CELL_SIZE : (CELL_SIZE * 1.41421356f);  // if surrounding pixel is diagnoal, mult by sqrt(2)
-
-          if (dH > 0.0f)  // if current pixel is higher than neighbor
+          else
           {
-            float t = dH / dist;
-            float L_val = L_ij;
-            if (L_val < 1e-5f) L_val = 1e-5f;
-            float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
-            float t_limit = tan_phi;
+            t_limit = 1e9f;  // basically infinity
+          }
+        }
 
-            if (K >= 1e-5f)
-            {
-              float disc = 1.0f - 4.0f * K * (tan_phi + K);
-              if (disc > 0.0f)
-              {
-                t_limit = (1.0f - sqrtf(disc)) / (2.0f * K);
-              }
-              else
-              {
-                t_limit = 1e9f;  // basically infinity
-              }
-            }
+        for (int d = 0; d < 8; d++)  // look through the 8 surrounding pixels
+        {
+          int lni = li + dx[d], lnj = lj + dy[d];
+          if (frozen[lni][lnj]) continue;  // don't let soil slump into the machine footprint
 
-            if (t > t_limit)
-            {
-              float slip = (t - t_limit) * dist * 0.2f;
-              // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
-              if (slip > L_ij / 8.0f) slip = L_ij / 8.0f;
-              delta_L[i - base_i][j - base_j] -= slip;
-              delta_L[ni - base_i][nj - base_j] += slip;
-              // We DO NOT update total_h or temp_L here to maintain symmetry
-            }
+          float dH = total_h - temp_T[lni][lnj];
+          if (dH <= 0.0f) continue;  // only shed to lower neighbors
+
+          float dist = dists[d];
+          float t = dH / dist;
+
+          if (t > t_limit)
+          {
+            float slip = (t - t_limit) * dist * 0.2f;
+            // Limit slip to avoid over-drawing from a single cell if multiple neighbors demand soil
+            if (slip > L_ij / 8.0f) slip = L_ij / 8.0f;
+            delta_L[li][lj] -= slip;
+            delta_L[lni][lnj] += slip;
+            // We DO NOT update total_h or temp_L here to maintain symmetry
           }
         }
       }
     }
 
-    for (int i = min_i; i <= max_i; i++)
+    // Apply delta_L only in the region that could have been modified (active bounds + 1)
+    int apply_min_i = (active_min_i > min_i) ? active_min_i - 1 : min_i;
+    int apply_max_i = (active_max_i < max_i) ? active_max_i + 1 : max_i;
+    int apply_min_j = (active_min_j > min_j) ? active_min_j - 1 : min_j;
+    int apply_max_j = (active_max_j < max_j) ? active_max_j + 1 : max_j;
+
+    for (int i = apply_min_i; i <= apply_max_i; i++)
     {
-      for (int j = min_j; j <= max_j; j++)
+      for (int j = apply_min_j; j <= apply_max_j; j++)
       {
         env->grid_L[i][j] += delta_L[i - base_i][j - base_j];
         if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f; // Prevent negative loose soil
       }
     }
+
+    // Shrink the scan window for the next iteration to the apply window.
+    scan_min_i = apply_min_i;
+    scan_max_i = apply_max_i;
+    scan_min_j = apply_min_j;
+    scan_max_j = apply_max_j;
   }
 }
 
@@ -1235,8 +1245,8 @@ static inline void update_surcharge(SoilEnv* env)
 
   // Create a local bounding box to search for loose soil (1.5m forward, plus width of blade)
   float search_radius = 2.0f; // rough max extent
-  int center_i = (int)(dozer->blade_x / CELL_SIZE);
-  int center_j = (int)(dozer->blade_y / CELL_SIZE);
+  int center_i = (int)floorf(dozer->blade_x / CELL_SIZE);
+  int center_j = (int)floorf(dozer->blade_y / CELL_SIZE);
   int margin = (int)(search_radius / CELL_SIZE) + 1;
 
   int min_i = clamp_idx(center_i - margin);
@@ -1321,10 +1331,10 @@ static inline void simulate_step(SoilEnv* env, float dt)
   forward_kinematics(env);
 
   // 6. Soil Interaction (Calculate reactive forces for next step)
-  interact_with_soil(env, dt);
+  interact_with_soil(env);
 
   // 7. Simulate Soil Erosion (Slumping)
-  simulate_erosion(env, dt, 3);
+  simulate_erosion(env, 3);
 
   // 8. Update Blade Surcharge
   update_surcharge(env);
@@ -1500,6 +1510,7 @@ static inline void env_reset(SoilEnv* env)
 void c_reset(SoilEnv* env)
 {
   env->tick = 0;
+  env->step_num = 0;
   memset(&env->dozer, 0, sizeof(Dozer));
   env_reset(env);
 }
@@ -1533,6 +1544,99 @@ void c_step(SoilEnv* env)
 
 #include "raylib_render.h"
 
+static inline void forward_kinematics_visual(SoilEnv* env)
+{
+  Dozer * dozer = &env->dozer;
+
+  float theta_arm = dozer->pos_virtual_lift_arm;
+  float theta_pitch = dozer->pos_blade_pitch;
+
+  // 1. Lift arm joint (local in chassis frame)
+  float q_arm_local[4];
+  euler_to_quat(0.0f, -theta_arm, 0.0f, q_arm_local);
+  float lift_arm_local_pos[3] = {dozer->arm_pivot_x, 0.0f, dozer->arm_pivot_z};
+
+  // 2. Pitch joint (local in chassis frame)
+  float arm_vector[3] = {dozer->arm_length, 0.0f, 0.0f};
+  float arm_offset[3];
+  quat_rotate(q_arm_local, arm_vector, arm_offset);
+
+  float pitch_joint_local_pos[3] = {
+    lift_arm_local_pos[0] + arm_offset[0],
+    lift_arm_local_pos[1] + arm_offset[1],
+    lift_arm_local_pos[2] + arm_offset[2]
+  };
+
+  float q_pitch_rel[4];
+  euler_to_quat(0.0f, -theta_pitch, 0.0f, q_pitch_rel);
+  float q_pitch_local[4];
+  quat_multiply(q_arm_local, q_pitch_rel, q_pitch_local);
+
+  // 3. Universal joint (local in chassis frame)
+  float pitch_vector[3] = {dozer->pitch_length, 0.0f, 0.0f};
+  float pitch_offset[3];
+  quat_rotate(q_pitch_local, pitch_vector, pitch_offset);
+
+  float u_joint_local_pos[3] = {
+    pitch_joint_local_pos[0] + pitch_offset[0],
+    pitch_joint_local_pos[1] + pitch_offset[1],
+    pitch_joint_local_pos[2] + pitch_offset[2]
+  };
+
+  float q_u_joint_rel[4];
+  euler_to_quat(dozer->pos_blade_roll, 0.0f, dozer->pos_blade_yaw, q_u_joint_rel);
+  float q_u_joint_local[4];
+  quat_multiply(q_pitch_local, q_u_joint_rel, q_u_joint_local);
+
+  // Transform intermediate joints from chassis local frame to world frame using dozer->q
+  float chassis_pos[3] = {dozer->position_x, dozer->position_y, dozer->position_z};
+
+  // Lift arm joint world pose
+  float lift_arm_world_pos[3];
+  quat_rotate(dozer->q, lift_arm_local_pos, lift_arm_world_pos);
+  dozer->_lift_arm_joint_pose[0] = lift_arm_world_pos[0] + chassis_pos[0];
+  dozer->_lift_arm_joint_pose[1] = lift_arm_world_pos[1] + chassis_pos[1];
+  dozer->_lift_arm_joint_pose[2] = lift_arm_world_pos[2] + chassis_pos[2];
+
+  float q_arm_world[4];
+  quat_multiply(dozer->q, q_arm_local, q_arm_world);
+  float rpy_arm[3];
+  quat_to_euler(q_arm_world, rpy_arm);
+  dozer->_lift_arm_joint_pose[3] = rpy_arm[0];
+  dozer->_lift_arm_joint_pose[4] = rpy_arm[1];
+  dozer->_lift_arm_joint_pose[5] = rpy_arm[2];
+
+  // Pitch joint world pose
+  float pitch_joint_world_pos[3];
+  quat_rotate(dozer->q, pitch_joint_local_pos, pitch_joint_world_pos);
+  dozer->_pitch_joint_pose[0] = pitch_joint_world_pos[0] + chassis_pos[0];
+  dozer->_pitch_joint_pose[1] = pitch_joint_world_pos[1] + chassis_pos[1];
+  dozer->_pitch_joint_pose[2] = pitch_joint_world_pos[2] + chassis_pos[2];
+
+  float q_pitch_world[4];
+  quat_multiply(dozer->q, q_pitch_local, q_pitch_world);
+  float rpy_pitch[3];
+  quat_to_euler(q_pitch_world, rpy_pitch);
+  dozer->_pitch_joint_pose[3] = rpy_pitch[0];
+  dozer->_pitch_joint_pose[4] = rpy_pitch[1];
+  dozer->_pitch_joint_pose[5] = rpy_pitch[2];
+
+  // U-joint world pose
+  float u_joint_world_pos[3];
+  quat_rotate(dozer->q, u_joint_local_pos, u_joint_world_pos);
+  dozer->_u_joint_pose[0] = u_joint_world_pos[0] + chassis_pos[0];
+  dozer->_u_joint_pose[1] = u_joint_world_pos[1] + chassis_pos[1];
+  dozer->_u_joint_pose[2] = u_joint_world_pos[2] + chassis_pos[2];
+
+  float q_u_joint_world[4];
+  quat_multiply(dozer->q, q_u_joint_local, q_u_joint_world);
+  float rpy_u_joint[3];
+  quat_to_euler(q_u_joint_world, rpy_u_joint);
+  dozer->_u_joint_pose[3] = rpy_u_joint[0];
+  dozer->_u_joint_pose[4] = rpy_u_joint[1];
+  dozer->_u_joint_pose[5] = rpy_u_joint[2];
+}
+
 void c_render(SoilEnv* env)
 {
   if (!IsWindowReady())
@@ -1545,6 +1649,7 @@ void c_render(SoilEnv* env)
     exit(0);
   }
 
+  forward_kinematics_visual(env);
   render_step(env);
 }
 
