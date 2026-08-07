@@ -15,6 +15,12 @@
 #define EROSION_WIN (2 * EROSION_MARGIN + 1)  // side length of the local erosion scratch window
 #define GRAVITY 9.81f
 #define PI 3.14159265358979323846f
+// Observation layout for CNN (keep flat 5011 for vecenv.h compat)
+// 11 proprio (incl. noisy surcharge [299,309]) + 2×50×50 spatial CHW: ch0=H+L-z, ch1=G-z [339]
+#define OBS_PROP_SIZE 11
+#define OBS_SPATIAL_CH 2
+#define OBS_SPATIAL_N (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE) // 2500
+#define OBS_SIZE_FLAT (OBS_PROP_SIZE + OBS_SPATIAL_CH * OBS_SPATIAL_N) // 5011
 // for more global params, see env_reset(), since we'll be randomizing these values between runs
 
 // Required PufferLib Log struct. Only use floats!
@@ -215,9 +221,15 @@ typedef struct
 
 typedef struct
 {
-  float proprioceptive[11];
-  float spatial[2][SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
+  float proprioceptive[OBS_PROP_SIZE];
+  float spatial[OBS_SPATIAL_CH][SPATIAL_OBS_SIZE][SPATIAL_OBS_SIZE];
 } Observation;
+_Static_assert(sizeof(Observation) == OBS_SIZE_FLAT * sizeof(float), "Observation flat size mismatch — keep 11+2*50*50=5011 for vecenv.h");
+
+// Helpers for CNN reshape (no copy): proprio = obs[0:11], spatial = obs[11:] as 2×50×50 CHW
+static inline float* obs_proprio(SoilEnv* env) { return env->observations; }
+static inline float* obs_spatial(SoilEnv* env) { return env->observations + OBS_PROP_SIZE; }
+static inline float* obs_spatial_ch(SoilEnv* env, int ch) { return env->observations + OBS_PROP_SIZE + ch * OBS_SPATIAL_N; }
 
 // Quaternion helpers
 static inline void euler_to_quat(float r, float p, float y, float q[4])
