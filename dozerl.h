@@ -326,8 +326,8 @@ static inline void get_obs(SoilEnv* env)
 
     for (int j = 0; j < SPATIAL_OBS_SIZE; j++)
     {
-      int grid_i = (int)(row_grid_x - j * sin_y);
-      int grid_j = (int)(row_grid_y + j * cos_y);
+      int grid_i = (int)floorf(row_grid_x - j * sin_y);
+      int grid_j = (int)floorf(row_grid_y + j * cos_y);
 
       // here we do some index mapping from 2d grid coords -> 1d obs array shape
       int h_obs_index = (i * SPATIAL_OBS_SIZE) + j + obs_offset;
@@ -426,10 +426,10 @@ static inline void update_chassis_pose(SoilEnv* env)
     float point_right_x = dozer->position_x + local_x * cos_y + half_track_gauge * sin_y;
     float point_right_y = dozer->position_y + local_x * sin_y - half_track_gauge * cos_y;
 
-    int grid_index_left_x = (int)(point_left_x / CELL_SIZE);
-    int grid_index_left_y = (int)(point_left_y / CELL_SIZE);
-    int grid_index_right_x = (int)(point_right_x / CELL_SIZE);
-    int grid_index_right_y = (int)(point_right_y / CELL_SIZE);
+    int grid_index_left_x = (int)floorf(point_left_x / CELL_SIZE);
+    int grid_index_left_y = (int)floorf(point_left_y / CELL_SIZE);
+    int grid_index_right_x = (int)floorf(point_right_x / CELL_SIZE);
+    int grid_index_right_y = (int)floorf(point_right_y / CELL_SIZE);
 
     float soil_height_left = 1.0f;
     float soil_height_right = 1.0f;
@@ -505,12 +505,13 @@ static inline void forward_kinematics(SoilEnv* env)
   float q_u_joint_local[4];
   quat_multiply(q_pitch_local, q_u_joint_rel, q_u_joint_local);
 
-  // 4. Blade edge (local in chassis frame)
-  float q_blade_rel[4];
-  euler_to_quat(dozer->pos_blade_roll, -theta_rake, dozer->pos_blade_yaw, q_blade_rel);
+  // 4. Blade edge (local in chassis frame) — rake is a fixed pitch of the
+  // blade relative to the u-joint, so apply roll+yaw first (q_u_joint) then rake
+  float q_rake_rel[4];
+  euler_to_quat(0.0f, -theta_rake, 0.0f, q_rake_rel);
 
   float q_blade_local[4];
-  quat_multiply(q_pitch_local, q_blade_rel, q_blade_local);
+  quat_multiply(q_u_joint_local, q_rake_rel, q_blade_local);
 
   float blade_edge_vector[3] = {0.0f, 0.0f, dozer->blade_height * -0.5f};
   float blade_edge_offset[3];
@@ -565,10 +566,10 @@ static inline void update_kinematics(SoilEnv* env)
   // Contact-footprint bounds are invariant across the compaction iterations (position_x/y don't change
   // here -- only z/pitch/roll do), so compute them once instead of every iteration.
   int margin = (int)((half_track_length + 1.0f) / CELL_SIZE);
-  int center_i = (int)(dozer->position_x / CELL_SIZE);
+  int center_i = (int)floorf(dozer->position_x / CELL_SIZE);
   int min_i = clamp_idx(center_i - margin);
   int max_i = clamp_idx(center_i + margin);
-  int center_j = (int)(dozer->position_y / CELL_SIZE);
+  int center_j = (int)floorf(dozer->position_y / CELL_SIZE);
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
@@ -831,10 +832,10 @@ static inline void interact_with_soil(SoilEnv* env)
   float end_m_y = dozer->blade_y - y_axis_world[1] * half_w;
 
   // 3. Convert to grid indices
-  int x0 = (int)(start_m_x / CELL_SIZE);
-  int y0 = (int)(start_m_y / CELL_SIZE);
-  int x1 = (int)(end_m_x / CELL_SIZE);
-  int y1 = (int)(end_m_y / CELL_SIZE);
+  int x0 = (int)floorf(start_m_x / CELL_SIZE);
+  int y0 = (int)floorf(start_m_y / CELL_SIZE);
+  int x1 = (int)floorf(end_m_x / CELL_SIZE);
+  int y1 = (int)floorf(end_m_y / CELL_SIZE);
 
   int dx_i = (x1 > x0) ? (x1 - x0) : (x0 - x1);
   int dy_i = (y1 > y0) ? (y1 - y0) : (y0 - y1);
@@ -924,8 +925,8 @@ static inline void interact_with_soil(SoilEnv* env)
       // 4. Calculate FEE force on the unyielding soil 1 cell directly in front
       float front_x = cell_m_x + CELL_SIZE * fwd_dir_x;
       float front_y = cell_m_y + CELL_SIZE * fwd_dir_y;
-      int f_grid_x = (int)(front_x / CELL_SIZE);
-      int f_grid_y = (int)(front_y / CELL_SIZE);
+      int f_grid_x = (int)floorf(front_x / CELL_SIZE);
+      int f_grid_y = (int)floorf(front_y / CELL_SIZE);
 
       if ((unsigned int)f_grid_x < GRID_SIZE && (unsigned int)f_grid_y < GRID_SIZE)
       {
@@ -964,8 +965,8 @@ static inline void interact_with_soil(SoilEnv* env)
       float dep_global_x = (cx + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_x;
       float dep_global_y = (cy + 0.5f) * CELL_SIZE + CELL_SIZE * fwd_dir_y;
 
-      int dep_x = (int)(dep_global_x / CELL_SIZE);
-      int dep_y = (int)(dep_global_y / CELL_SIZE);
+      int dep_x = (int)floorf(dep_global_x / CELL_SIZE);
+      int dep_y = (int)floorf(dep_global_y / CELL_SIZE);
       if ((unsigned int)dep_x < GRID_SIZE && (unsigned int)dep_y < GRID_SIZE)
       {
         env->grid_L[dep_x][dep_y] += dh;
@@ -1035,10 +1036,10 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   Dozer* dozer = &env->dozer;
 
   int margin = EROSION_MARGIN;  // number of cells we buffer about the blade (~4.0m at CELL_SIZE=0.2)
-  int center_i = (int)(dozer->blade_x / CELL_SIZE);  // get the ith cell location of the blade
+  int center_i = (int)floorf(dozer->blade_x / CELL_SIZE);  // get the ith cell location of the blade
   int min_i = clamp_idx(center_i - margin);  // use our buffer to find the min ith cell
   int max_i = clamp_idx(center_i + margin);  // same but for max
-  int center_j = (int)(dozer->blade_y / CELL_SIZE);  // repeat last three but for jth cells
+  int center_j = (int)floorf(dozer->blade_y / CELL_SIZE);  // repeat last three but for jth cells
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
@@ -1076,8 +1077,8 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   for (int c = 0; c < 4; c++) {
     float wx = dozer->blade_x + cx[c] * cos_y - cy[c] * sin_y;
     float wy = dozer->blade_y + cx[c] * sin_y + cy[c] * cos_y;
-    int gi = (int)(wx / CELL_SIZE);
-    int gj = (int)(wy / CELL_SIZE);
+    int gi = (int)floorf(wx / CELL_SIZE);
+    int gj = (int)floorf(wy / CELL_SIZE);
     if (gi < frozen_min_i) frozen_min_i = gi;
     if (gi > frozen_max_i) frozen_max_i = gi;
     if (gj < frozen_min_j) frozen_min_j = gj;
@@ -1162,11 +1163,12 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
         int li = i - base_i, lj = j - base_j;
         float L_ij = temp_L[li][lj];
         if (L_ij <= 1e-4f) continue;  // if loose soil at this pixel is 0, skip
+        if (frozen[li][lj]) continue;  // don't let soil slump *from* the machine footprint
         float total_h = temp_T[li][lj];  // get total height at this pixel
 
         float L_val = L_ij;
         if (L_val < 1e-5f) L_val = 1e-5f;
-        float K = env->soil_c / (env->loose_soil_density * GRAVITY * L_val);
+        float K = env->soil_c / (env->soil_gamma * L_val);
         float t_limit = tan_phi;
 
         if (K >= 1e-5f)
@@ -1235,8 +1237,8 @@ static inline void update_surcharge(SoilEnv* env)
 
   // Create a local bounding box to search for loose soil (1.5m forward, plus width of blade)
   float search_radius = 2.0f; // rough max extent
-  int center_i = (int)(dozer->blade_x / CELL_SIZE);
-  int center_j = (int)(dozer->blade_y / CELL_SIZE);
+  int center_i = (int)floorf(dozer->blade_x / CELL_SIZE);
+  int center_j = (int)floorf(dozer->blade_y / CELL_SIZE);
   int margin = (int)(search_radius / CELL_SIZE) + 1;
 
   int min_i = clamp_idx(center_i - margin);
