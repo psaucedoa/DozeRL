@@ -385,20 +385,20 @@ static inline void precompute_soil_bearing_capacity(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // precompute the trig terms for the given step
+  // precompute the trig terms for the given step — clamp phi before trig so tan/cos stay consistent at low phi
   float phi = env->soil_phi;
-  float tan_phi = tanf(phi);
-  float cos_phi = cosf((PI * 0.25f) + (phi * 0.5f));
-
-  if (tan_phi < 0.01f) tan_phi = 0.01f;  // set min bound for tan_phi
+  float phi_eff = fmaxf(phi, 5.0f * PI / 180.0f);
+  float tan_phi = tanf(phi_eff);
+  float cos_phi = cosf((PI * 0.25f) + (phi_eff * 0.5f));
 
   // Using Terzaghi's soil bearing capacity theory.
   // Bearing capacity factors are additionally subscripted with '_b' to distinguish them from the blade FEE factors
   // Q_u = c * N_c + gamma * D * N_q + 0.5 * gamma * B * N_gamma
   //                                    ^ this value is because we assume a "strip footing"
   // Q_u = [cohesion] + [footing depth & overburden pressure] + [footing width & length of shear stress area]
-  float N_q_b = expf( (3.0f * PI * 0.5f * tan_phi) - phi* tan_phi ) / ( 2.0f *  cos_phi * cos_phi);
+  float N_q_b = expf( (3.0f * PI * 0.5f * tan_phi) - phi_eff * tan_phi ) / ( 2.0f *  cos_phi * cos_phi);
   float N_c_b = (N_q_b - 1.0f) / tan_phi;
+  if (phi < 5.0f * PI / 180.0f) N_c_b = 5.7f; // Terzaghi phi=0 limit
   float N_gamma_b = 2.0f * (N_q_b + 1.0f) * tan_phi;
 
   // given that out 'footing' is at the surface, our foundation depth is 0, and the second term goes to 0, thus
