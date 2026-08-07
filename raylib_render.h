@@ -250,15 +250,6 @@ static inline void render_step(SoilEnv* env)
   DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal", 10, 40, 20, DARKGRAY);
   DrawText(TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), 10, 250, 20, show_goal ? GREEN : GRAY);
 
-  if (IsGamepadAvailable(0)) 
-  {
-    DrawText("Gamepad", 10, 70, 20, GREEN);
-  }
-  else
-  {
-    DrawText("Keyboard", 10, 70, 20, ORANGE);
-  }
-
   DrawText(TextFormat("Lin Vel: %.2f m/s | Yaw Vel: %.2f rad/s", dozer->twist_linear_x, dozer->twist_angular_z), 10, 100, 20, BLACK);
   DrawText(TextFormat("Arm Pos: %.2f | Vel: %.2f", dozer->pos_virtual_lift_arm, dozer->vel_virtual_lift_arm), 10, 130, 20, BLACK);
   DrawText(TextFormat("Pitch Pos: %.2f | Vel: %.2f", dozer->pos_blade_pitch, dozer->vel_blade_pitch), 10, 150, 20, BLACK);
