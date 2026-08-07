@@ -296,7 +296,7 @@ static inline void get_obs(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // get observations. First [0-9] are proprioceptive, rest are map (2x250)
+  // get observations. First [0-10] are proprioceptive (10 + noisy surcharge), rest are map (2x50x50)
   env->observations[0]  = dozer->pos_virtual_lift_arm;
   env->observations[1]  = dozer->pos_blade_pitch;
   env->observations[2]  = dozer->pos_blade_roll;
@@ -307,7 +307,15 @@ static inline void get_obs(SoilEnv* env)
   env->observations[7]  = dozer->vel_blade_pitch;
   env->observations[8]  = dozer->vel_blade_roll;
   env->observations[9]  = dozer->vel_blade_yaw;  // this one, however, may not be necessary..?
-  int obs_offset = 10;  // for index mapping later on
+  // Noisy surcharge: real platform would estimate from cylinder pressure,
+  // so model as ±20% multiplicative + ±500N additive, normalized to ~1.0 ≈ 15kN loaded
+  {
+    float q = dozer->blade_surcharge_Q;
+    float q_noisy = q * (1.0f + (rand_f(&env->rng) - 0.5f) * 0.4f) + (rand_f(&env->rng) - 0.5f) * 1000.0f;
+    if (q_noisy < 0.0f) q_noisy = 0.0f;
+    env->observations[10] = q_noisy / 15000.0f; // 0=empty, ~1=full blade
+  }
+  int obs_offset = 11;  // 11 proprio (10 + noisy surcharge) before spatial
   // onto map observations
   // first we compute cos & sin for the vehicle's current yaw
   float cos_y = cosf(dozer->angular_z);
