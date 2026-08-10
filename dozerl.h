@@ -419,7 +419,9 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     r_off_map += -0.5;
   }
 
-  float reward = r_shaping + r_time + r_off_map;
+  float r_motion = dozer->vel_tracks_linear * 0.02;
+
+  float reward = r_shaping + r_time + r_off_map + r_motion;
 
   // success bonus + terminal
   int done = 0;
