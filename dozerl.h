@@ -24,22 +24,24 @@ typedef struct {
     float episode_return; // Recommended metric: sum of agent rewards over episode
     float episode_length; // Recommended metric: number of steps of agent episode
 
-    float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
-    float count_off_map;  // Custom metric: average off-map steps per episode
-    float count_jitter;   // Custom metric: average high-jitter steps per episode
+    // float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
+    // float count_off_map;  // Custom metric: average off-map steps per episode
+    // float count_jitter;   // Custom metric: average high-jitter steps per episode
+
     // max values
     float max_vel_arm;  // Custom metric: max arm angular velocity per episode
     float max_vel_blade_pitch;  // Custom metric: max blade pitch angular velocity per episode
-    float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
+    // float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
     float max_vel_linear;  // Custom metric: max linear vehicle velocity per episode
+
     // min values
     float min_vel_arm;  // Custom metric: min arm angular velocity per episode
     float min_vel_blade_pitch;  // Custom metric: min blade pitch angular velocity per episode
-    float min_vel_blade_roll;  // Custom metric: min blade roll velocity per episode
+    // float min_vel_blade_roll;  // Custom metric: min blade roll velocity per episode
     float min_vel_linear;  // Custom metric: min linear vehicle velocity per episode
 
     // reward signals per ep
-    float total_reward;
+    // float total_reward;
     float r_shaping;
     float r_off_map;
     float r_time;
@@ -423,11 +425,11 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     r_off_map += -0.5;
   }
 
-  // float r_motion = dozer->vel_tracks_linear * 0.05;
+  float r_motion = dozer->vel_tracks_linear * 0.01;
 
   // float reward = r_shaping + r_time + r_off_map + r_motion;
   // float reward = r_shaping + r_time + r_off_map;
-  float reward = (progress - env->prev_progress) * 100;
+  float reward = r_motion + (progress - env->prev_progress) * 100;
 
   // success bonus + terminal
   int done = 0;
@@ -448,8 +450,8 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   if (dozer->vel_virtual_lift_arm < env->log.min_vel_arm) env->log.min_vel_arm = dozer->vel_virtual_lift_arm;
   if (dozer->vel_blade_pitch > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = dozer->vel_blade_pitch;
   if (dozer->vel_blade_pitch < env->log.min_vel_blade_pitch) env->log.min_vel_blade_pitch = dozer->vel_blade_pitch;
-  if (dozer->vel_blade_roll > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = dozer->vel_blade_roll;
-  if (dozer->vel_blade_roll < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = dozer->vel_blade_roll;
+  // if (dozer->vel_blade_roll > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = dozer->vel_blade_roll;
+  // if (dozer->vel_blade_roll < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = dozer->vel_blade_roll;
   if (dozer->twist_linear_x > env->log.max_vel_linear) env->log.max_vel_linear = dozer->twist_linear_x;
   if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
 
@@ -464,12 +466,12 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 
   env->log.perf = progress;
   env->log.score = -cur_error; // lower error = higher score
-  env->log.total_reward += reward;
+  // env->log.total_reward += reward;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
-  env->log.count_large_neg_rewards = env->count_large_neg_rewards;
-  env->log.count_off_map = env->count_off_map;
-  env->log.count_jitter = env->count_jitter;
+  // env->log.count_large_neg_rewards = env->count_large_neg_rewards;
+  // env->log.count_off_map = env->count_off_map;
+  // env->log.count_jitter = env->count_jitter;
   env->log.n = done ? 1.0f : 0.0f;
 }
 
@@ -1507,7 +1509,7 @@ static inline void generate_goal_map(SoilEnv* env)
   float half_pile_w = pile_width * 0.5f;
 
   // Randomized geometry (per-episode)
-  float slot_len    = 5.5f + rand_f(&env->rng) * 2.5f;   // [2.5, 5.0] m
+  float slot_len    = 5.5f + rand_f(&env->rng) * 1.5f;   // [5.5, 7.0] m
   float slot_depth  = 0.15f + rand_f(&env->rng) * 0.10f; // [0.15, 0.25] m
   float pile_height = 0.8f + rand_f(&env->rng) * 0.4f;   // [0.8, 1.2] m (~1 m)
 
@@ -1606,7 +1608,7 @@ static inline void env_reset(SoilEnv* env)
   env->swell_ratio = 1.2f;
 
   // rewards
-  env->log.total_reward = 0;
+  // env->log.total_reward = 0;
   env->log.r_shaping = 0;
   env->log.r_off_map = 0;
   env->log.r_time = 0;
@@ -1721,11 +1723,11 @@ static inline void env_reset(SoilEnv* env)
   env->log.n = 0.0f;
   env->log.max_vel_arm = -1e9f;
   env->log.max_vel_blade_pitch = -1e9f;
-  env->log.max_vel_blade_roll = -1e9f;
+  // env->log.max_vel_blade_roll = -1e9f;
   env->log.max_vel_linear = -1e9f;
   env->log.min_vel_arm = 1e9f;
   env->log.min_vel_blade_pitch = 1e9f;
-  env->log.min_vel_blade_roll = 1e9f;
+  // env->log.min_vel_blade_roll = 1e9f;
   env->log.min_vel_linear = 1e9f;
 }
 
