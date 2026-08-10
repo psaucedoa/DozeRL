@@ -7,6 +7,7 @@
 
 static Camera3D camera = { 0 };
 static bool show_goal = false;  // toggled with 'G': translucent goal-map overlay
+static int camera_view = 0; // 0: x-y top, 1: y-z side, 2: x-z front — cycled with 'C'
 
 static inline void init_render()
 {
@@ -228,15 +229,23 @@ static inline void render_step(SoilEnv* env)
   Dozer* dozer = &env->dozer;
 
   if (IsKeyPressed(KEY_G)) show_goal = !show_goal;
+  if (IsKeyPressed(KEY_C)) camera_view = (camera_view + 1) % 3;
 
-  camera.target = (Vector3){ dozer->position_x, dozer->position_z, dozer->position_y };
-  float cam_dist = 12.0f;
-  float cam_height = 8.0f;
-  camera.position = (Vector3){
-    0, //dozer->position_x - cam_dist * cosf(dozer->angular_z),
-    8, //dozer->position_z + cam_height,
-    0, //dozer->position_y - cam_dist * sinf(dozer->angular_z)
-  };
+  // 3 views, all centered on middle of grid world (30x30m, center 15,15)
+  float center = GRID_SIZE * CELL_SIZE * 0.5f;
+  if (camera_view == 0) { // x-y plane — top-down (look down Y / world Z)
+    camera.target = (Vector3){ center, 0.0f, center };
+    camera.position = (Vector3){ center, 40.0f, center };
+    camera.up = (Vector3){ 0.0f, 0.0f, -1.0f };
+  } else if (camera_view == 1) { // y-z plane — side view along +X
+    camera.target = (Vector3){ center, 1.0f, center };
+    camera.position = (Vector3){ center - 50.0f, 2.0f, center };
+    camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+  } else { // x-z plane — front view along +Z (Y world)
+    camera.target = (Vector3){ center, 1.0f, center };
+    camera.position = (Vector3){ center, 2.0f, center - 50.0f };
+    camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
+  }
   BeginDrawing();
   ClearBackground(RAYWHITE);
 
@@ -247,8 +256,10 @@ static inline void render_step(SoilEnv* env)
   EndMode3D();
 
   DrawFPS(10, 10);
-  DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal", 10, 40, 20, DARKGRAY);
+  DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal | C: View", 10, 40, 20, DARKGRAY);
+  DrawText(TextFormat("Terrain Error: %.2f / %.2f  Perf: %.1f%%  Return: %.1f", env->cur_error, env->initial_error, env->log.perf*100.0f, env->episode_return), 10, 70, 20, MAROON);
   DrawText(TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), 10, 250, 20, show_goal ? GREEN : GRAY);
+  DrawText(TextFormat("View (C): %s", camera_view==0 ? "X-Y TOP" : camera_view==1 ? "Y-Z SIDE" : "X-Z FRONT"), 10, 270, 20, DARKGRAY);
 
   DrawText(TextFormat("Lin Vel: %.2f m/s | Yaw Vel: %.2f rad/s", dozer->twist_linear_x, dozer->twist_angular_z), 10, 100, 20, BLACK);
   DrawText(TextFormat("Arm Pos: %.2f | Vel: %.2f", dozer->pos_virtual_lift_arm, dozer->vel_virtual_lift_arm), 10, 130, 20, BLACK);
