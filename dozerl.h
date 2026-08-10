@@ -362,9 +362,19 @@ static inline float compute_terrain_error(SoilEnv* env)
   float cell_area = CELL_SIZE * CELL_SIZE;
   for (int i = 0; i < GRID_SIZE; i++) {
     for (int j = 0; j < GRID_SIZE; j++) {
-      if (env->map_region[i][j] == 0) continue;
+      char region = env->map_region[i][j];
+      if (region == 0) continue; // neutral: free transit (option A)
       float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
-      err += fabsf(env->grid_G[i][j] - cur_h) * cell_area;
+      float goal = env->grid_G[i][j];
+      float contrib;
+      if (region == 1) { // CUT: need cur <= goal, penalize under-cut fully, over-cut 0.2x
+        float over = cur_h - goal; // >0 means still above goal, need more cut
+        contrib = (over > 0.0f) ? over : -over * 0.2f;
+      } else { // region==2 FILL: need cur >= goal
+        float under = goal - cur_h; // >0 means still below goal, need more fill
+        contrib = (under > 0.0f) ? under : -under * 0.2f;
+      }
+      err += contrib * cell_area;
     }
   }
   return err;
@@ -372,8 +382,19 @@ static inline float compute_terrain_error(SoilEnv* env)
 
 static inline float cell_error_contrib(SoilEnv* env, int i, int j)
 {
-  if (env->map_region[i][j] == 0) return 0.0f;
-  return fabsf(env->grid_G[i][j] - (env->grid_H[i][j] + env->grid_L[i][j])) * CELL_SIZE * CELL_SIZE;
+  char region = env->map_region[i][j];
+  if (region == 0) return 0.0f;
+  float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
+  float goal = env->grid_G[i][j];
+  if (region == 1) {
+    float over = cur_h - goal;
+    float contrib = (over > 0.0f) ? over : -over * 0.2f;
+    return contrib * CELL_SIZE * CELL_SIZE;
+  } else {
+    float under = goal - cur_h;
+    float contrib = (under > 0.0f) ? under : -under * 0.2f;
+    return contrib * CELL_SIZE * CELL_SIZE;
+  }
 }
 
 static inline void update_reward_and_terminal(SoilEnv* env)
