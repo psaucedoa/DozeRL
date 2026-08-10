@@ -426,7 +426,8 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   // float r_motion = dozer->vel_tracks_linear * 0.05;
 
   // float reward = r_shaping + r_time + r_off_map + r_motion;
-  float reward = r_shaping + r_time + r_off_map;
+  // float reward = r_shaping + r_time + r_off_map;
+  float reward = (progress - env->prev_progress) * 100;
 
   // success bonus + terminal
   int done = 0;
@@ -459,6 +460,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->episode_return += reward;
 
   env->prev_error = cur_error;
+  env->prev_progress = progress;
 
   env->log.perf = progress;
   env->log.score = -cur_error; // lower error = higher score
@@ -1499,20 +1501,22 @@ static inline void generate_goal_map(SoilEnv* env)
     }
   }
 
-  float width = dozer->blade_width * 1.75f;   // slot & pile span one blade width
-  float half_w = width * 0.5f;
+  float slot_width = dozer->blade_width;            // slot as wide as blade
+  float pile_width = dozer->blade_width * 1.75f;      // pile ~1.75× wider for slumping
+  float half_slot_w = slot_width * 0.5f;
+  float half_pile_w = pile_width * 0.5f;
 
   // Randomized geometry (per-episode)
   float slot_len    = 5.5f + rand_f(&env->rng) * 2.5f;   // [2.5, 5.0] m
   float slot_depth  = 0.15f + rand_f(&env->rng) * 0.10f; // [0.15, 0.25] m
   float pile_height = 0.8f + rand_f(&env->rng) * 0.4f;   // [0.8, 1.2] m (~1 m)
 
-  // Volume balance: loose pile = swell_ratio * compacted cut
-  float cut_volume  = slot_len * width * slot_depth;
+  // Volume balance: loose pile = swell_ratio * compacted cut (slot width vs pile width)
+  float cut_volume  = slot_len * slot_width * slot_depth;
   float pile_volume = env->swell_ratio * cut_volume;
 
-  // Triangular ridge across the blade width: V = 0.5 * base * height * width  ->  base length:
-  float pile_len = (3.0f * pile_volume) / (pile_height * width);
+  // Gaussian pile across pile_width: V = ∫h dA  ->  base length from volume
+  float pile_len = (3.0f * pile_volume) / (pile_height * pile_width);
 
   // Random heading; the slot mouth begins at the dozer and runs outward, pile at the far end.
   // float theta = rand_f(&env->rng) * 2.0f * PI;
@@ -1528,7 +1532,7 @@ static inline void generate_goal_map(SoilEnv* env)
   // Gaussian pile: bell-shaped mound with ~30° repose, volume-matched to cut*swell
   // Two-pass to preserve exact volume: first pass sum raw Gaussian, second apply scaled heights
   float sigma_p = pile_len * 0.25f; // along-pile std (≈ pile_len/4 gives ~30° side slope)
-  float sigma_v = half_w * 0.5f;    // across-pile std (≈ width/4)
+  float sigma_v = half_pile_w * 0.5f;    // across-pile std (≈ pile_width/4)
   if (sigma_p < 0.2f) sigma_p = 0.2f;
   if (sigma_v < 0.2f) sigma_v = 0.2f;
   float raw_vol = 0.0f;
@@ -1542,7 +1546,7 @@ static inline void generate_goal_map(SoilEnv* env)
       float ry = cell_y - start_y;
       float u = rx * dir_x + ry * dir_y;
       float v = rx * perp_x + ry * perp_y;
-      if (fabsf(v) > half_w) continue;
+      if (fabsf(v) > half_pile_w) continue;
       if (u < 0.0f || u > total_len) continue;
       if (u <= slot_len) continue; // slot not part of pile volume
       float p = u - slot_len;
@@ -1566,16 +1570,17 @@ static inline void generate_goal_map(SoilEnv* env)
       float u = rx * dir_x + ry * dir_y;    // along the slot->pile axis
       float v = rx * perp_x + ry * perp_y;  // across the width
 
-      if (fabsf(v) > half_w) continue;      // outside the worked strip
       if (u < 0.0f || u > total_len) continue;
 
       if (u <= slot_len)
       {
+        if (fabsf(v) > half_slot_w) continue; // slot width = blade width
         env->grid_G[i][j] -= slot_depth;    // dig the slot
         env->map_region[i][j] = 1;          // 1 = Cut
       }
       else
       {
+        if (fabsf(v) > half_pile_w) continue; // pile ~1.75× wider for slumping
         float p = u - slot_len;             // 0..pile_len within the pile
         float dp = p - half_pile;
         float h_raw = expf(-0.5f * ((dp*dp)/(sigma_p*sigma_p) + (v*v)/(sigma_v*sigma_v)));
