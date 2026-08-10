@@ -1628,8 +1628,8 @@ static inline void env_reset(SoilEnv* env)
   // Joint States POS
   dozer->pos_tracks_rotational = 0.0f;
   dozer->pos_tracks_linear = 0.0f;
-  dozer->pos_virtual_lift_arm = 0.0f;  // (rad) arm angle
-  dozer->pos_blade_pitch = 0.0f;       // (rad) blade pitch
+  dozer->pos_virtual_lift_arm = -0.45f;  // (rad) arm angle
+  dozer->pos_blade_pitch = 0.45f;       // (rad) blade pitch
   dozer->pos_blade_roll = 0.0f;        // (rad) blade roll
   dozer->pos_blade_yaw = 0.0f;         // (rad) blade yaw
 
