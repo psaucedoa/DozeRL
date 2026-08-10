@@ -1646,11 +1646,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->effort_linear = 0.0f;      // efort
   dozer->effort_rotational = 0.0f;  // efort
 
-  // Joint States POS
+  // Joint States POS — start with blade slightly above ground plane (~0.1-0.2m)
   dozer->pos_tracks_rotational = 0.0f;
   dozer->pos_tracks_linear = 0.0f;
-  dozer->pos_virtual_lift_arm = 0.0f;  // (rad) arm angle
-  dozer->pos_blade_pitch = 0.0f;       // (rad) blade pitch
+  dozer->pos_virtual_lift_arm = -0.45f;  // (rad) arm angle — ~0.12m blade clearance at flat terrain
+  dozer->pos_blade_pitch = 0.45f;        // (rad) blade pitch
   dozer->pos_blade_roll = 0.0f;        // (rad) blade roll
   dozer->pos_blade_yaw = 0.0f;         // (rad) blade yaw
 
