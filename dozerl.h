@@ -1729,7 +1729,8 @@ void c_step(SoilEnv* env)
   dozer->effort_rotational = clamp_action(env->actions[1]);
   dozer->effort_lift       = clamp_action(env->actions[2]);
   dozer->effort_pitch      = clamp_action(env->actions[3]);
-  dozer->effort_roll       = clamp_action(env->actions[4]);
+  // dozer->effort_roll       = clamp_action(env->actions[4]);
+  dozer->effort_roll       = 0;
   dozer->effort_yaw        = 0;  // this should just get zero'd (since we don't have control over this)
 
   env->terminals[0] = 0;  // zero these guys just in case

@@ -8,7 +8,7 @@ void demo(const char* checkpoint_path)
 {
   SoilEnv* env = (SoilEnv*)malloc(sizeof(SoilEnv));
   env->observations = (float*)calloc(5011, sizeof(float));
-  env->actions = (float*)calloc(6, sizeof(float));
+  env->actions = (float*)calloc(4, sizeof(float));
   env->rewards = (float*)calloc(1, sizeof(float));
   env->terminals = (float*)calloc(1, sizeof(float));
   env->rng = 42;
@@ -25,7 +25,7 @@ void demo(const char* checkpoint_path)
     env->actions[1] = 0.0f;
     env->actions[2] = 0.0f;
     env->actions[3] = 0.0f;
-    env->actions[4] = 0.0f;
+    // env->actions[4] = 0.0f;
 
     if (IsKeyPressed(KEY_R))
     {
@@ -62,8 +62,8 @@ void demo(const char* checkpoint_path)
       if (IsKeyDown(KEY_DOWN)) env->actions[2] = -1.0f;
       if (IsKeyDown(KEY_LEFT)) env->actions[3] = 1.0f;
       if (IsKeyDown(KEY_RIGHT)) env->actions[3] = -1.0f;
-      if (IsKeyDown(KEY_Q)) env->actions[4] = -1.0f;
-      if (IsKeyDown(KEY_E)) env->actions[4] = 1.0f;
+      // if (IsKeyDown(KEY_Q)) env->actions[4] = -1.0f;
+      // if (IsKeyDown(KEY_E)) env->actions[4] = 1.0f;
     }
 
     c_step(env);
