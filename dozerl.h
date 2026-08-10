@@ -1467,7 +1467,7 @@ static inline void generate_goal_map(SoilEnv* env)
     }
   }
 
-  float width = dozer->blade_width;   // slot & pile span one blade width
+  float width = dozer->blade_width * 1.5f;   // slot & pile span one blade width
   float half_w = width * 0.5f;
 
   // Randomized geometry (per-episode)
@@ -1493,6 +1493,35 @@ static inline void generate_goal_map(SoilEnv* env)
   float total_len = slot_len + pile_len;
   float half_pile = pile_len * 0.5f;
 
+  // Gaussian pile: bell-shaped mound with ~30° repose, volume-matched to cut*swell
+  // Two-pass to preserve exact volume: first pass sum raw Gaussian, second apply scaled heights
+  float sigma_p = pile_len * 0.25f; // along-pile std (≈ pile_len/4 gives ~30° side slope)
+  float sigma_v = half_w * 0.5f;    // across-pile std (≈ width/4)
+  if (sigma_p < 0.2f) sigma_p = 0.2f;
+  if (sigma_v < 0.2f) sigma_v = 0.2f;
+  float raw_vol = 0.0f;
+  for (int i = 0; i < GRID_SIZE; i++)
+  {
+    for (int j = 0; j < GRID_SIZE; j++)
+    {
+      float cell_x = (i + 0.5f) * CELL_SIZE;
+      float cell_y = (j + 0.5f) * CELL_SIZE;
+      float rx = cell_x - start_x;
+      float ry = cell_y - start_y;
+      float u = rx * dir_x + ry * dir_y;
+      float v = rx * perp_x + ry * perp_y;
+      if (fabsf(v) > half_w) continue;
+      if (u < 0.0f || u > total_len) continue;
+      if (u <= slot_len) continue; // slot not part of pile volume
+      float p = u - slot_len;
+      float dp = p - half_pile;
+      float h_raw = expf(-0.5f * ((dp*dp)/(sigma_p*sigma_p) + (v*v)/(sigma_v*sigma_v)));
+      raw_vol += h_raw * CELL_SIZE * CELL_SIZE;
+    }
+  }
+  float pile_scale = 1.0f;
+  if (raw_vol > 1e-6f) pile_scale = pile_volume / raw_vol;
+
   for (int i = 0; i < GRID_SIZE; i++)
   {
     for (int j = 0; j < GRID_SIZE; j++)
@@ -1516,9 +1545,11 @@ static inline void generate_goal_map(SoilEnv* env)
       else
       {
         float p = u - slot_len;             // 0..pile_len within the pile
-        float h = pile_height * (1.0f - fabsf(p - half_pile) / half_pile); // triangular ridge
+        float dp = p - half_pile;
+        float h_raw = expf(-0.5f * ((dp*dp)/(sigma_p*sigma_p) + (v*v)/(sigma_v*sigma_v)));
+        float h = h_raw * pile_scale;
         if (h < 0.0f) h = 0.0f;
-        env->grid_G[i][j] += h;             // heap the pile
+        env->grid_G[i][j] += h;             // heap the Gaussian pile
         env->map_region[i][j] = 2;          // 2 = Fill
       }
 
