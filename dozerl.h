@@ -422,14 +422,14 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   if (dozer->position_x < 0.0f || dozer->position_x > GRID_SIZE * CELL_SIZE ||
       dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE) {
     env->count_off_map += 1.0f;
-    r_off_map += -0.5;
+    r_off_map += -1.5;
   }
 
   float r_motion = dozer->vel_tracks_linear * 0.01;
 
   // float reward = r_shaping + r_time + r_off_map + r_motion;
   // float reward = r_shaping + r_time + r_off_map;
-  float reward = r_motion + (progress - env->prev_progress) * 100;
+  float reward = r_off_map + r_motion + (progress - env->prev_progress) * 100;
 
   // success bonus + terminal
   int done = 0;
@@ -440,7 +440,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 
   // time limit (1 min at 60Hz control = 3600 steps)
   if (env->step_num >= 3600) done = 1;
-  if (env->count_off_map > 100.0f) done = 1; // persistent off-map
+  // if (env->count_off_map > 100.0f) done = 1; // persistent off-map
 
   env->rewards[0] = reward;
   env->terminals[0] = done ? 1.0f : 0.0f;
@@ -1187,11 +1187,10 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
-  // Local scratch buffers are indexed relative to the blade-centered window origin (base_i, base_j),
-  // so we only allocate the small EROSION_WIN^2 window instead of the full grid. Absolute grid cell
-  // (i, j) maps to local cell (i - base_i, j - base_j); the clamped [min,max] range always fits in [0, EROSION_WIN).
-  int base_i = center_i - margin;
-  int base_j = center_j - margin;
+  // Local scratch buffers are indexed relative to the clamped window origin (base_i=min_i, base_j=min_j),
+  // so the [min,max] range always fits in [0, EROSION_WIN) even when blade is off-map (center far outside).
+  int base_i = min_i;
+  int base_j = min_j;
 
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
