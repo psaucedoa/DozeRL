@@ -393,31 +393,17 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->prev_progress = progress;
 
   // penalties
-  float r_effort = -0.01f * (fabsf(dozer->effort_linear) + fabsf(dozer->effort_rotational));
-  // mild pitch/roll effort also penalized to reduce jitter
-  r_effort += -0.005f * (fabsf(dozer->effort_pitch) + fabsf(dozer->effort_roll));
   float r_time = -0.001f;
-  float r_large_neg = 0.0f;
-  if (cur_error > init * 1.2f) {
-    r_large_neg = -5.0f;
-    env->count_large_neg_rewards += 1.0f;
-  }
+  float r_off_map = 0.0f;
 
-  // jitter / off-map tracking (for logs)
-  float action_mag = fabsf(dozer->effort_linear) + fabsf(dozer->effort_rotational)
-                   + fabsf(dozer->effort_pitch) + fabsf(dozer->effort_roll);
-  if (action_mag > 3.5f) env->count_jitter += 1.0f;
-
-  int off_map = 0;
+  // off-map tracking (for logs)
   if (dozer->position_x < 0.0f || dozer->position_x > GRID_SIZE * CELL_SIZE ||
       dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE) {
-    off_map = 1;
     env->count_off_map += 1.0f;
+    r_off_map += -0.5;
   }
 
-  float reward = r_shaping + r_effort + r_time + r_large_neg;
-  // small penalty for off-map
-  if (off_map) reward -= 0.5f;
+  float reward = r_shaping + r_effort + r_time + r_off_map;
 
   // success bonus + terminal
   int done = 0;
@@ -425,6 +411,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     reward += 5.0f;
     done = 1;
   }
+
   // time limit (1 min at 60Hz control = 3600 steps)
   if (env->step_num >= 3600) done = 1;
   if (off_map && env->count_off_map > 100.0f) done = 1; // persistent off-map
@@ -432,23 +419,31 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->rewards[0] = reward;
   env->terminals[0] = done ? 1.0f : 0.0f;
 
-  // logs for pufferlib
+  // velocity extremes for debugging — track true max/min per episode
+  if (dozer->vel_virtual_lift_arm > env->log.max_vel_arm) env->log.max_vel_arm = dozer->vel_virtual_lift_arm;
+  if (dozer->vel_virtual_lift_arm < env->log.min_vel_arm) env->log.min_vel_arm = dozer->vel_virtual_lift_arm;
+  if (dozer->vel_blade_pitch > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = dozer->vel_blade_pitch;
+  if (dozer->vel_blade_pitch < env->log.min_vel_blade_pitch) env->log.min_vel_blade_pitch = dozer->vel_blade_pitch;
+  if (dozer->vel_blade_roll > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = dozer->vel_blade_roll;
+  if (dozer->vel_blade_roll < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = dozer->vel_blade_roll;
+  if (dozer->twist_linear_x > env->log.max_vel_linear) env->log.max_vel_linear = dozer->twist_linear_x;
+  if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
+
+  // also expose shaping components for analysis
+  env->log.r_shaping_ = r_shaping;
+  env->log.r_time_ = r_time;
+  env->log.r_off_map_ = (off_map ? -0.5f : 0.0f) + (cur_error < 0.02f * init ? 5.0f : 0.0f);
+
+  // logs for pufferlib — only counted when n=1 (episode done)
+  env->episode_return += reward;
   env->log.perf = progress;
   env->log.score = -cur_error; // lower error = higher score
-  env->episode_return += reward;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
   env->log.count_large_neg_rewards = env->count_large_neg_rewards;
   env->log.count_off_map = env->count_off_map;
   env->log.count_jitter = env->count_jitter;
-  // velocity extremes for debugging
-  if (fabsf(dozer->vel_virtual_lift_arm) > fabsf(env->log.max_vel_arm)) env->log.max_vel_arm = dozer->vel_virtual_lift_arm;
-  if (fabsf(dozer->vel_blade_pitch) > fabsf(env->log.max_vel_blade_pitch)) env->log.max_vel_blade_pitch = dozer->vel_blade_pitch;
-  if (fabsf(dozer->vel_blade_roll) > fabsf(env->log.max_vel_blade_roll)) env->log.max_vel_blade_roll = dozer->vel_blade_roll;
-  if (fabsf(dozer->twist_linear_x) > fabsf(env->log.max_vel_linear)) env->log.max_vel_linear = dozer->twist_linear_x;
-  // also expose shaping components for analysis
-  env->r1 = r_shaping;
-  env->log.r1_norm = r_shaping;
+  env->log.n = done ? 1.0f : 0.0f;
 }
 
 static inline void precompute_FEE(SoilEnv* env, float alpha)
@@ -1632,6 +1627,15 @@ static inline void env_reset(SoilEnv* env)
   env->count_large_neg_rewards = 0.0f;
   memset(&env->log, 0, sizeof(Log));
   env->log.perf = 0.0f;
+  env->log.n = 0.0f;
+  env->log.max_vel_arm = -1e9f;
+  env->log.max_vel_blade_pitch = -1e9f;
+  env->log.max_vel_blade_roll = -1e9f;
+  env->log.max_vel_linear = -1e9f;
+  env->log.min_vel_arm = 1e9f;
+  env->log.min_vel_blade_pitch = 1e9f;
+  env->log.min_vel_blade_roll = 1e9f;
+  env->log.min_vel_linear = 1e9f;
 }
 
 void c_reset(SoilEnv* env)
