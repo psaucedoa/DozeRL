@@ -39,11 +39,9 @@ typedef struct {
     float min_vel_linear;  // Custom metric: min linear vehicle velocity per episode
 
     // reward signals per ep
-    float r1_norm;
-    float r2_norm;
-    float r3_norm;
-    float r4_norm;
-    float r5_norm;
+    float r_shaping;
+    float r_off_map;
+    float r_time;
 
     float n; // Required as the last field
 } Log;
@@ -383,14 +381,11 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   Dozer * dozer = &env->dozer;
   float cur_error = env->cur_error;
   float init = env->initial_error;
-  if (init < 1e-6f) init = 1.0f;
   float progress = (init - cur_error) / init;
   if (progress < 0.0f) progress = 0.0f;
   if (progress > 1.0f) progress = 1.0f;
-
   // dense shaping: delta progress scaled
-  float r_shaping = (progress - env->prev_progress) * 10.0f;
-  env->prev_progress = progress;
+  float r_shaping = (cur_error - init) * 10.0f;
 
   // penalties
   float r_time = -0.001f;
@@ -403,7 +398,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     r_off_map += -0.5;
   }
 
-  float reward = r_shaping + r_effort + r_time + r_off_map;
+  float reward = r_shaping + r_time + r_off_map;
 
   // success bonus + terminal
   int done = 0;
@@ -414,7 +409,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 
   // time limit (1 min at 60Hz control = 3600 steps)
   if (env->step_num >= 3600) done = 1;
-  if (off_map && env->count_off_map > 100.0f) done = 1; // persistent off-map
+  if (env->count_off_map > 100.0f) done = 1; // persistent off-map
 
   env->rewards[0] = reward;
   env->terminals[0] = done ? 1.0f : 0.0f;
@@ -429,12 +424,10 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   if (dozer->twist_linear_x > env->log.max_vel_linear) env->log.max_vel_linear = dozer->twist_linear_x;
   if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
 
-  // also expose shaping components for analysis
-  env->log.r_shaping_ = r_shaping;
-  env->log.r_time_ = r_time;
-  env->log.r_off_map_ = (off_map ? -0.5f : 0.0f) + (cur_error < 0.02f * init ? 5.0f : 0.0f);
-
   // logs for pufferlib — only counted when n=1 (episode done)
+  env->log.r_shaping += r_shaping;
+  env->log.r_time += r_time;
+  env->log.r_off_map += r_off_map;
   env->episode_return += reward;
   env->log.perf = progress;
   env->log.score = -cur_error; // lower error = higher score
@@ -1478,8 +1471,8 @@ static inline void generate_goal_map(SoilEnv* env)
   float half_w = width * 0.5f;
 
   // Randomized geometry (per-episode)
-  float slot_len    = 2.5f + rand_f(&env->rng) * 2.5f;   // [2.5, 5.0] m
-  float slot_depth  = 0.15f + rand_f(&env->rng) * 0.30f; // [0.15, 0.45] m
+  float slot_len    = 5.5f + rand_f(&env->rng) * 2.5f;   // [2.5, 5.0] m
+  float slot_depth  = 0.15f + rand_f(&env->rng) * 0.10f; // [0.15, 0.25] m
   float pile_height = 0.8f + rand_f(&env->rng) * 0.4f;   // [0.8, 1.2] m (~1 m)
 
   // Volume balance: loose pile = swell_ratio * compacted cut
@@ -1487,13 +1480,14 @@ static inline void generate_goal_map(SoilEnv* env)
   float pile_volume = env->swell_ratio * cut_volume;
 
   // Triangular ridge across the blade width: V = 0.5 * base * height * width  ->  base length:
-  float pile_len = (2.0f * pile_volume) / (pile_height * width);
+  float pile_len = (3.0f * pile_volume) / (pile_height * width);
 
   // Random heading; the slot mouth begins at the dozer and runs outward, pile at the far end.
-  float theta = rand_f(&env->rng) * 2.0f * PI;
+  // float theta = rand_f(&env->rng) * 2.0f * PI;
+  float theta = 0;
   float dir_x = cosf(theta),  dir_y = sinf(theta);
   float perp_x = -dir_y,      perp_y = dir_x;
-  float start_x = dozer->position_x;
+  float start_x = dozer->position_x + 2.0f;
   float start_y = dozer->position_y;
 
   float total_len = slot_len + pile_len;
@@ -1539,7 +1533,7 @@ static inline void env_reset(SoilEnv* env)
   env->soil_gamma = 15000.0f;
   env->soil_c = 300.0f;   // (Pa) soil cohesion
   env->soil_c_a = 0.0f;   // (Pa) soil-blade adhesion
-  env->soil_phi = 30.0f * M_PI / 180.0f;
+  env->soil_phi = 45.0f * M_PI / 180.0f;
   env->soil_delta = 10.0f * M_PI / 180.0f;
   env->swell_ratio = 1.2f;
 
@@ -1594,7 +1588,7 @@ static inline void env_reset(SoilEnv* env)
   dozer->pos_blade_roll_max = 0.5f;
 
 
-  dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f;
+  dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f - 10.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
   dozer->position_z = 1.0f;
 
