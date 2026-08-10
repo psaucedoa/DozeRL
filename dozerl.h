@@ -39,6 +39,7 @@ typedef struct {
     float min_vel_linear;  // Custom metric: min linear vehicle velocity per episode
 
     // reward signals per ep
+    float total_reward;
     float r_shaping;
     float r_off_map;
     float r_time;
@@ -202,6 +203,7 @@ typedef struct
   float initial_error;
   float cur_error; // incremental volume error over cut/fill zone
   float prev_progress;
+  float prev_error;
   float episode_return;
   float count_off_map;
   float count_jitter;
@@ -401,12 +403,14 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
   float cur_error = env->cur_error;
+  float prev_error = env->prev_error;
+
   float init = env->initial_error;
   float progress = (init - cur_error) / init;
   if (progress < 0.0f) progress = 0.0f;
   if (progress > 1.0f) progress = 1.0f;
   // dense shaping: delta progress scaled
-  float r_shaping = (cur_error - init) * 10.0f;
+  float r_shaping = (cur_error - prev_error) * 100 / init;
 
   // penalties
   float r_time = -0.001f;
@@ -419,9 +423,10 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     r_off_map += -0.5;
   }
 
-  float r_motion = dozer->vel_tracks_linear * 0.02;
+  // float r_motion = dozer->vel_tracks_linear * 0.05;
 
-  float reward = r_shaping + r_time + r_off_map + r_motion;
+  // float reward = r_shaping + r_time + r_off_map + r_motion;
+  float reward = r_shaping + r_time + r_off_map;
 
   // success bonus + terminal
   int done = 0;
@@ -452,8 +457,12 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->log.r_time += r_time;
   env->log.r_off_map += r_off_map;
   env->episode_return += reward;
+
+  env->prev_error = cur_error;
+
   env->log.perf = progress;
   env->log.score = -cur_error; // lower error = higher score
+  env->log.total_reward += reward;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
   env->log.count_large_neg_rewards = env->count_large_neg_rewards;
@@ -1490,7 +1499,7 @@ static inline void generate_goal_map(SoilEnv* env)
     }
   }
 
-  float width = dozer->blade_width * 1.5f;   // slot & pile span one blade width
+  float width = dozer->blade_width * 1.75f;   // slot & pile span one blade width
   float half_w = width * 0.5f;
 
   // Randomized geometry (per-episode)
@@ -1591,6 +1600,12 @@ static inline void env_reset(SoilEnv* env)
   env->soil_delta = 10.0f * M_PI / 180.0f;
   env->swell_ratio = 1.2f;
 
+  // rewards
+  env->log.total_reward = 0;
+  env->log.r_shaping = 0;
+  env->log.r_off_map = 0;
+  env->log.r_time = 0;
+
   Dozer* dozer = &env->dozer;
 
   // dimensions | m
@@ -1651,7 +1666,7 @@ static inline void env_reset(SoilEnv* env)
   // Joint States POS — start with blade slightly above ground plane (~0.1-0.2m)
   dozer->pos_tracks_rotational = 0.0f;
   dozer->pos_tracks_linear = 0.0f;
-  dozer->pos_virtual_lift_arm = -0.45f;  // (rad) arm angle — ~0.12m blade clearance at flat terrain
+  dozer->pos_virtual_lift_arm = -0.45f;  // (rad) arm angle
   dozer->pos_blade_pitch = 0.45f;        // (rad) blade pitch
   dozer->pos_blade_roll = 0.0f;        // (rad) blade roll
   dozer->pos_blade_yaw = 0.0f;         // (rad) blade yaw
@@ -1663,7 +1678,6 @@ static inline void env_reset(SoilEnv* env)
   dozer->vel_blade_pitch = 0.0f;        // Current relative pitch velocity (rad/s)
   dozer->vel_blade_roll = 0.0f;         // Current relative roll velocity (rad/s)
   dozer->vel_blade_yaw = 0.0f;          // Current relative yaw velocity (rad/s)
-
 
   dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f - 10.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
@@ -1691,6 +1705,7 @@ static inline void env_reset(SoilEnv* env)
   // reward bookkeeping — init from terrain error (volume error over cut/fill zone)
   env->initial_error = compute_terrain_error(env);
   env->cur_error = env->initial_error;
+  env->prev_error = 0.0f;
   env->prev_progress = 0.0f;
   env->episode_return = 0.0f;
   env->count_off_map = 0.0f;
