@@ -22,4 +22,13 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "max arm vel", log->max_vel_arm);
     dict_set(out, "max blade pitch vel", log->max_vel_blade_pitch);
     dict_set(out, "max blade roll vel", log->max_vel_blade_roll);
+    dict_set(out, "max linear vel", log->max_vel_linear);
+    dict_set(out, "min arm vel", log->min_vel_arm);
+    dict_set(out, "min blade pitch vel", log->min_vel_blade_pitch);
+    dict_set(out, "min blade roll vel", log->min_vel_blade_roll);
+    dict_set(out, "min linear vel", log->min_vel_linear);
+    dict_set(out, "r_shaping", log->r_shaping);
+    dict_set(out, "r_off_map", log->r_off_map);
+    dict_set(out, "r_time", log->r_time);
+    dict_set(out, "n", log->n);
 }
