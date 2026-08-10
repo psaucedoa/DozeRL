@@ -1587,6 +1587,29 @@ static inline void env_reset(SoilEnv* env)
   dozer->pos_blade_roll_min = -0.5f;
   dozer->pos_blade_roll_max = 0.5f;
 
+  dozer->effort_lift = 0.0f;        // efort
+  dozer->effort_pitch = 0.0f;       // efort
+  dozer->effort_roll = 0.0f;        // efort
+  dozer->effort_yaw = 0.0f;         // efort
+  dozer->effort_linear = 0.0f;      // efort
+  dozer->effort_rotational = 0.0f;  // efort
+
+  // Joint States POS
+  dozer->pos_tracks_rotational = 0.0f;
+  dozer->pos_tracks_linear = 0.0f;
+  dozer->pos_virtual_lift_arm = 0.0f;  // (rad) arm angle
+  dozer->pos_blade_pitch = 0.0f;       // (rad) blade pitch
+  dozer->pos_blade_roll = 0.0f;        // (rad) blade roll
+  dozer->pos_blade_yaw = 0.0f;         // (rad) blade yaw
+
+  // Joint States VEL
+  dozer->vel_tracks_rotational = 0.0f;  // (rad/s) tracks rotational velocity
+  dozer->vel_tracks_linear = 0.0f;      // (m/s)   tracks linear velocity
+  dozer->vel_virtual_lift_arm = 0.0f;   // Current arm angular velocity (rad/s)
+  dozer->vel_blade_pitch = 0.0f;        // Current relative pitch velocity (rad/s)
+  dozer->vel_blade_roll = 0.0f;         // Current relative roll velocity (rad/s)
+  dozer->vel_blade_yaw = 0.0f;          // Current relative yaw velocity (rad/s)
+
 
   dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f - 10.0f;
   dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
