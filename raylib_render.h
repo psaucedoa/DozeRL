@@ -11,7 +11,7 @@ static int camera_view = 0; // 0: x-y top, 1: y-z side, 2: x-z front — cycled 
 
 static inline void init_render()
 {
-  InitWindow(1280, 720, "DozeRL Simulator");
+  InitWindow(1920, 1080, "DozeRL Simulator");
   SetTargetFPS(60);
 
   camera.position = (Vector3){ 15.0f, 15.0f, 15.0f };
@@ -170,27 +170,11 @@ static inline void draw_dozer(SoilEnv* env)
 {
   Dozer* dozer = &env->dozer;
 
-  Color chassis_color = (Color){210, 180, 140, 055};      // Desert Tan
-  Color arm_color = (Color){180, 150, 110, 255};          // Darker Desert Tan
-  Color track_color = (Color){60, 60, 60, 255};           // Dark Grey
-  Color blade_color = (Color){80, 80, 80, 255};           // Dark Grey
   Color yellow = (Color){255, 255, 0, 255};  //yellow
-
-  Vector3 pitch_joint = {0.0f, 0.0f, 0.0f};
-  Vector3 u_joint     = {0.0f, 0.0f, 0.0f};
-  Vector3 blade_edge  = {0.0f, 0.0f, 0.0f};
-
-  float track_height   = 0.41f;  // m
-  float chassis_length = 2.54f;  // m
-  float chassis_width  = 1.00f;  // m
-  float chassis_height = 1.87f;  // m
-  float gauge_offset = dozer->track_gauge * 0.5f;
-  float track_offset = dozer->track_width * 0.5f;
 
   Vector3 joint_size = {0.5f, 0.5f, 0.5f};
 
   // Chassis
-  Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};
   Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z};
   Vector3 chassis_rot = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
   draw_rectangular_prism(chassis_pos, chassis_rot, joint_size, yellow);
@@ -258,16 +242,21 @@ static inline void render_step(SoilEnv* env)
   DrawFPS(10, 10);
   DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal | C: View", 10, 40, 20, DARKGRAY);
   DrawText(TextFormat("Terrain Error: %.2f / %.2f  Perf: %.1f%%  Return: %.1f", env->cur_error, env->initial_error, env->log.perf*100.0f, env->episode_return), 10, 70, 20, MAROON);
-  DrawText(TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), 10, 250, 20, show_goal ? GREEN : GRAY);
-  DrawText(TextFormat("View (C): %s", camera_view==0 ? "X-Y TOP" : camera_view==1 ? "Y-Z SIDE" : "X-Z FRONT"), 10, 270, 20, DARKGRAY);
 
   DrawText(TextFormat("Lin Vel: %.2f m/s | Yaw Vel: %.2f rad/s", dozer->twist_linear_x, dozer->twist_angular_z), 10, 100, 20, BLACK);
   DrawText(TextFormat("Arm Pos: %.2f | Vel: %.2f", dozer->pos_virtual_lift_arm, dozer->vel_virtual_lift_arm), 10, 130, 20, BLACK);
   DrawText(TextFormat("Pitch Pos: %.2f | Vel: %.2f", dozer->pos_blade_pitch, dozer->vel_blade_pitch), 10, 150, 20, BLACK);
   DrawText(TextFormat("Roll Pos: %.2f | Vel: %.2f", dozer->pos_blade_roll, dozer->vel_blade_roll), 10, 170, 20, BLACK);
+  DrawText(TextFormat("X: %.2f | Y: %.2f", dozer->position_x, dozer->position_y), 10, 190, 20, BLACK);
 
-  DrawText(TextFormat("Effort Lin: %.2f | Rot: %.2f", dozer->effort_linear, dozer->effort_rotational), 10, 200, 20, BLUE);
-  DrawText(TextFormat("Effort Lift: %.2f | Pitch: %.2f | Roll: %.2f", dozer->effort_lift, dozer->effort_pitch, dozer->effort_roll), 10, 220, 20, BLUE);
+  DrawText(TextFormat("Effort Lin: %.2f | Rot: %.2f", dozer->effort_linear, dozer->effort_rotational), 10, 220, 20, BLUE);
+  DrawText(TextFormat("Effort Lift: %.2f | Pitch: %.2f | Roll: %.2f", dozer->effort_lift, dozer->effort_pitch, dozer->effort_roll), 10, 240, 20, BLUE);
+
+  DrawText(TextFormat("Surcharge_q: %.2f", dozer->blade_surcharge_Q), 10, 290, 20, BLACK);
+  DrawText(TextFormat("Tracks Lin: %.2f m/s | Tracks Rot: %.2f rad/s", dozer->vel_tracks_linear, dozer->vel_tracks_rotational), 10, 310, 20, BLACK);
+
+  DrawText(TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), 10, 360, 20, show_goal ? GREEN : GRAY);
+  DrawText(TextFormat("View (C): %s", camera_view==0 ? "X-Y TOP" : camera_view==1 ? "Y-Z SIDE" : "X-Z FRONT"), 10, 380, 20, DARKGRAY);
 
   EndDrawing();
 }
