@@ -1,5 +1,5 @@
 #include "dozerl.h"
-#define OBS_SIZE OBS_SIZE_FLAT
+#define OBS_SIZE 5011
 #define NUM_ATNS 4
 #define ACT_SIZES {1, 1, 1, 1}
 #define OBS_TENSOR_T FloatTensor

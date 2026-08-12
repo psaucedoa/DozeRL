@@ -16,6 +16,36 @@ void demo(const char* checkpoint_path)
   Weights* weights = NULL;
   PufferNet* net = NULL;
 
+
+  if (checkpoint_path != NULL)
+  {
+    weights = load_weights(checkpoint_path);
+    // weights, num_agents, input_dim, hidden_dim, num_layers, logit_sizes[], num_actions
+
+    int num_agents = 1;
+    int input_dim = 5011;
+    int hidden_dim = 512;
+    int num_layers = 2;
+    int logit_sizes[6] = {1, 1, 1, 1, 1, 1};
+    int num_actions = 4;
+
+    net = make_puffernet(
+      weights,
+      num_agents,
+      input_dim,
+      hidden_dim,
+      num_layers,
+      logit_sizes,
+      num_actions
+    );
+  }
+
+  else
+  {
+    Weights* weights = NULL;
+    PufferNet* net = NULL;
+  }
+
   c_reset(env);
   c_render(env);
 
@@ -50,7 +80,7 @@ void demo(const char* checkpoint_path)
       float rt = GetGamepadAxisMovement(0, GAMEPAD_AXIS_RIGHT_TRIGGER);
       float lt_val = (lt + 1.0f) / 2.0f;
       float rt_val = (rt + 1.0f) / 2.0f;
-      env->actions[4] = rt_val - lt_val;
+      // env->actions[4] = rt_val - lt_val;
     }
     else
     {
