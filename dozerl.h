@@ -412,24 +412,32 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   if (progress < 0.0f) progress = 0.0f;
   if (progress > 1.0f) progress = 1.0f;
   // dense shaping: delta progress scaled
-  float r_shaping = (cur_error - prev_error) * 100 / init;
+  // float r_shaping = (cur_error - prev_error) * 1000 / init;
 
   // penalties
-  float r_time = -0.001f;
+  // float r_time = -0.001f;
   float r_off_map = 0.0f;
 
   // off-map tracking (for logs)
   if (dozer->position_x < 0.0f || dozer->position_x > GRID_SIZE * CELL_SIZE ||
       dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE) {
     env->count_off_map += 1.0f;
-    r_off_map += -1.5;
+    r_off_map += -5.0;
   }
 
-  float r_motion = dozer->vel_tracks_linear * 0.01;
+  // float r_motion = dozer->vel_tracks_linear * 0.005;
+  float r_rotation = -1.0 * fabs(dozer->vel_tracks_rotational) * 0.05;
+
+  // float r_surcharge = 0;
+  // if (dozer->blade_surcharge_Q > 0)
+  // {
+    // r_surcharge = 0.01;
+  // }
 
   // float reward = r_shaping + r_time + r_off_map + r_motion;
   // float reward = r_shaping + r_time + r_off_map;
-  float reward = r_off_map + r_motion + (progress - env->prev_progress) * 100;
+  // float reward = r_off_map + r_motion + r_rotation + r_surcharge + (progress - env->prev_progress) * 100;
+  float reward = r_off_map + r_rotation + (progress - env->prev_progress) * 1000;
 
   // success bonus + terminal
   int done = 0;
@@ -456,8 +464,8 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
 
   // logs for pufferlib — only counted when n=1 (episode done)
-  env->log.r_shaping += r_shaping;
-  env->log.r_time += r_time;
+  // env->log.r_shaping += r_shaping;
+  // env->log.r_time += r_time;
   env->log.r_off_map += r_off_map;
   env->episode_return += reward;
 
@@ -1672,8 +1680,8 @@ static inline void env_reset(SoilEnv* env)
   // Joint States POS — start with blade slightly above ground plane (~0.1-0.2m)
   dozer->pos_tracks_rotational = 0.0f;
   dozer->pos_tracks_linear = 0.0f;
-  dozer->pos_virtual_lift_arm = -0.45f;  // (rad) arm angle
-  dozer->pos_blade_pitch = 0.45f;        // (rad) blade pitch
+  dozer->pos_virtual_lift_arm = -0.43f;  // (rad) arm angle
+  dozer->pos_blade_pitch = 0.5f;        // (rad) blade pitch
   dozer->pos_blade_roll = 0.0f;        // (rad) blade roll
   dozer->pos_blade_yaw = 0.0f;         // (rad) blade yaw
 
