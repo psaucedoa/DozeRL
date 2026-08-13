@@ -321,8 +321,8 @@ static inline void get_obs(SoilEnv* env)
   if (env->observations[4] > env->log.max_vel_rotational) env->log.max_vel_rotational = env->observations[4];
   if (env->observations[4] < env->log.min_vel_rotational) env->log.min_vel_rotational = env->observations[4];
 
-  if (env->observations[5] > env->log.max_vel_linear) env->log.max_vel_rotational = env->observations[5];
-  if (env->observations[5] < env->log.min_vel_linear) env->log.min_vel_rotational = env->observations[5];
+  if (env->observations[5] > env->log.max_vel_linear) env->log.max_vel_linear = env->observations[5];
+  if (env->observations[5] < env->log.min_vel_linear) env->log.min_vel_linear = env->observations[5];
 
   if (env->observations[6] > env->log.max_vel_arm) env->log.max_vel_arm = env->observations[6];
   if (env->observations[6] < env->log.min_vel_arm) env->log.min_vel_arm = env->observations[6];
@@ -456,67 +456,13 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     r_off_map += -0.1;
   }
 
-  // we'll do some reward staging
-
-  // --- stage 1 --- (100 mill)
-  // here we'll just reward moving in a pseudo-scripted fashion
-  // we want to move towards the pile location
-  float r_stage_1 = 0.0f;
-
-  if (env->forward == 1 && env->stage_1 == 1)
-  {
-    float dist_pile_init = fabs(env->goal_pile_x - env->start_x) + fabs(env->goal_pile_y - env->start_y);
-    float dist_pile = fabs(env->goal_pile_x - dozer->position_x) + fabs(env->goal_pile_y - dozer->position_y);
-    float dist_arm = fabs(dozer->pos_virtual_lift_arm + 0.43f);
-    float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
-
-    float r_linear      = dozer->vel_tracks_linear * 0.05f;
-    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.02f;
-    float r_arm         = -1.0f * dist_arm * 0.05f;
-    float r_pitch       = -1.0f * dist_pitch * 0.05f;
-    float r_pile        = ((dist_pile_init - dist_pile) / (dist_pile_init * 50.0f));
-    float r_energy      = -0.01f * (dozer->effort_linear*dozer->effort_linear + dozer->effort_rotational*dozer->effort_rotational + dozer->effort_lift*dozer->effort_lift + dozer->effort_pitch*dozer->effort_pitch);
-
-    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_pile + r_energy;
-    if(dist_pile < 0.75f)
-    {
-      env->forward = 0;
-    }
-  }
-  else if(env->forward == 0 && env->stage_1 == 1)  // backward
-  {
-    float dist_pile_init = fabs(env->goal_pile_x - env->start_x) + fabs(env->goal_pile_y - env->start_y);
-    float dist_start = fabs(env->start_x - dozer->position_x) + fabs(env->start_y - dozer->position_y);
-    float dist_arm = fabs(dozer->pos_virtual_lift_arm + 0.33f);
-    float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
-
-    float r_linear      = -1.0f * dozer->vel_tracks_linear * 0.05f;
-    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.02f;
-    float r_arm         = -1.0f * dist_arm * 0.05f;
-    float r_pitch       = -1.0f * dist_pitch * 0.05f;
-    float r_start       = ((dist_pile_init - dist_start) / (dist_pile_init * 50.0f));
-    float r_energy      = -0.01f * (dozer->effort_linear*dozer->effort_linear + dozer->effort_rotational*dozer->effort_rotational + dozer->effort_lift*dozer->effort_lift + dozer->effort_pitch*dozer->effort_pitch);
-
-    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_start + r_energy;
-    // r_stage_1 = r_linear + r_rotational + r_arm + r_pitch;
-
-    if(dist_start < 0.25f)
-    {
-      env->forward = 1;
-    }
-  }
-
-  // scale by tick
-  r_stage_1 = r_stage_1 * 1.0f;
-
   // Dense soil-moving signal: scaled progress delta (0-1 normalized) + small survival bonus
   // Previous commented scale 1000 was 100x too large vs r_stage_1 ~0.1; 20 keeps it comparable.
   float r_progress = (progress - env->prev_progress) * 20.0f;
   if (r_progress > 1.0f) r_progress = 1.0f;
   if (r_progress < -1.0f) r_progress = -1.0f;
-  // Alternative volume-form: (env->prev_error - cur_error) * 10.0f gives similar magnitude
-  float r_survival = 0.02f;
-  float reward = r_off_map + r_stage_1 + r_progress + r_survival;
+
+  float reward = r_off_map + r_progress;
 
   // success bonus + terminal
   int done = 0;
@@ -1829,15 +1775,15 @@ static inline void env_reset(SoilEnv* env)
   env->log.max_vel_linear       = -1e9f;
   env->log.max_vel_rotational   = -1e9f;
   env->log.max_vel_blade_yaw    = -1e9f;
-  env->log.min_vel_arm          = -1e9f;
-  env->log.min_vel_blade_pitch  = -1e9f;
-  env->log.min_vel_blade_roll   = -1e9f;
-  env->log.min_vel_linear       = -1e9f;
-  env->log.min_vel_rotational   = -1e9f;
-  env->log.min_vel_blade_yaw    = -1e9f;
+  env->log.min_vel_arm          = 1e9f;
+  env->log.min_vel_blade_pitch  = 1e9f;
+  env->log.min_vel_blade_roll   = 1e9f;
+  env->log.min_vel_linear       = 1e9f;
+  env->log.min_vel_rotational   = 1e9f;
+  env->log.min_vel_blade_yaw    = 1e9f;
 
   env->log.max_height = -1e9f;
-  env->log.min_height = -1e9f;
+  env->log.min_height = 1e9f;
 }
 
 void c_reset(SoilEnv* env)
@@ -1859,7 +1805,6 @@ void c_step(SoilEnv* env)
   dozer->effort_rotational = clamp_action(env->actions[1]);
   dozer->effort_lift       = clamp_action(env->actions[2]);
   dozer->effort_pitch      = clamp_action(env->actions[3]);
-  // dozer->effort_roll       = clamp_action(env->actions[4]);
   dozer->effort_roll       = 0;
   dozer->effort_yaw        = 0;  // this should just get zero'd (since we don't have control over this)
 
