@@ -309,12 +309,12 @@ static inline void get_obs(SoilEnv* env)
   env->observations[1]  = dozer->pos_blade_pitch * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
   env->observations[2]  = dozer->pos_blade_roll * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
   env->observations[3]  = dozer->pos_blade_yaw * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
-  env->observations[4]  = dozer->vel_tracks_rotational / 2.0f;
-  env->observations[5]  = dozer->vel_tracks_linear / 3.0f;
-  env->observations[6]  = dozer->vel_virtual_lift_arm / 2.0f;
-  env->observations[7]  = dozer->vel_blade_pitch / 2.0f;
-  env->observations[8]  = dozer->vel_blade_roll / 2.0f;
-  env->observations[9]  = dozer->vel_blade_yaw / 2.0f;
+  env->observations[4]  = dozer->vel_tracks_rotational * 0.5f;
+  env->observations[5]  = dozer->vel_tracks_linear * 0.333f;
+  env->observations[6]  = dozer->vel_virtual_lift_arm * 0.5f;
+  env->observations[7]  = dozer->vel_blade_pitch * 0.14f;
+  env->observations[8]  = dozer->vel_blade_roll * 0.5f;
+  env->observations[9]  = dozer->vel_blade_yaw * 0.5f;
   // Noisy surcharge: real platform would estimate from cylinder pressure,
   // so model as ±20% multiplicative + ±500N additive, normalized to ~1.0 ≈ 15kN loaded
   {
