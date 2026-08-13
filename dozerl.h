@@ -24,22 +24,21 @@ typedef struct {
     float episode_return; // Recommended metric: sum of agent rewards over episode
     float episode_length; // Recommended metric: number of steps of agent episode
 
-    // float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
-    // float count_off_map;  // Custom metric: average off-map steps per episode
-    // float count_jitter;   // Custom metric: average high-jitter steps per episode
-
     // max values
     float max_vel_arm;  // Custom metric: max arm angular velocity per episode
     float max_vel_blade_pitch;  // Custom metric: max blade pitch angular velocity per episode
-    // float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
+    float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
     float max_vel_linear;  // Custom metric: max linear vehicle velocity per episode
+    float max_vel_rotational;  // Custom metric: max rotational vehicle velocity per episode
+    float max_vel_blade_yaw;
 
     // min values
     float min_vel_arm;  // Custom metric: min arm angular velocity per episode
     float min_vel_blade_pitch;  // Custom metric: min blade pitch angular velocity per episode
-    // float min_vel_blade_roll;  // Custom metric: min blade roll velocity per episode
+    float min_vel_blade_roll;  // Custom metric: min blade roll velocity per episode
     float min_vel_linear;  // Custom metric: min linear vehicle velocity per episode
-
+    float min_vel_rotational;  // Custom metric: min rotational vehicle velocity per episode
+    float min_vel_blade_yaw;
     // reward signals per ep
     // float total_reward;
     float r_shaping;
@@ -315,9 +314,28 @@ static inline void get_obs(SoilEnv* env)
   env->observations[4]  = dozer->vel_tracks_rotational * 0.5f;
   env->observations[5]  = dozer->vel_tracks_linear * 0.333f;
   env->observations[6]  = dozer->vel_virtual_lift_arm * 0.5f;
-  env->observations[7]  = dozer->vel_blade_pitch * 0.14f;
+  env->observations[7]  = dozer->vel_blade_pitch * 0.1f;
   env->observations[8]  = dozer->vel_blade_roll * 0.5f;
   env->observations[9]  = dozer->vel_blade_yaw * 0.5f;
+
+  if (env->observations[4] > env->log.max_vel_rotational) env->log.max_vel_rotational = env->observations[4];
+  if (env->observations[4] < env->log.min_vel_rotational) env->log.min_vel_rotational = env->observations[4];
+
+  if (env->observations[5] > env->log.max_vel_linear) env->log.max_vel_rotational = env->observations[5];
+  if (env->observations[5] < env->log.min_vel_linear) env->log.min_vel_rotational = env->observations[5];
+
+  if (env->observations[6] > env->log.max_vel_arm) env->log.max_vel_arm = env->observations[6];
+  if (env->observations[6] < env->log.min_vel_arm) env->log.min_vel_arm = env->observations[6];
+
+  if (env->observations[7] > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = env->observations[7];
+  if (env->observations[7] < env->log.min_vel_blade_pitch) env->log.min_vel_blade_pitch = env->observations[7];
+
+  if (env->observations[8] > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = env->observations[8];
+  if (env->observations[8] < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = env->observations[8];
+
+  if (env->observations[9] > env->log.max_vel_blade_yaw) env->log.max_vel_blade_yaw = env->observations[9];
+  if (env->observations[9] < env->log.min_vel_blade_yaw) env->log.min_vel_blade_yaw = env->observations[9];
+
   // Noisy surcharge: real platform would estimate from cylinder pressure,
   // so model as ±20% multiplicative + ±500N additive, normalized to ~1.0 ≈ 15kN loaded
   {
@@ -353,15 +371,18 @@ static inline void get_obs(SoilEnv* env)
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
       // if the selected env grid is within bounds of the sim region, grab the underlying map data
-      // Normalize height deltas by 0.5m (typical slot depth 0.15-0.25m, pile ~1m) to keep in ~[-2,2]
+      // Channel 0: current height relative to chassis (as before)
+      // Channel 1: now difference current - goal (error map) instead of absolute goal height
+      // Both normalized by 0.5m (-> ~[-2,2] for typical 0.25m cut / 1m pile)
       if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
       {
         float cur_h = env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
-        env->observations[h_obs_index] = (cur_h - dozer->position_z) / 0.5f;
-        env->observations[g_obs_index] = (env->grid_G[grid_i][grid_j] - dozer->position_z) / 0.5f;
+        float goal_h = env->grid_G[grid_i][grid_j];
+        env->observations[h_obs_index] = (cur_h - dozer->position_z) * 0.5f;
+        env->observations[g_obs_index] = (cur_h - goal_h) * 0.5f;
         // track max & min observed raw heightmap cell for PufferLib logging
-        if (cur_h > env->log.max_height) env->log.max_height = cur_h;
-        if (cur_h < env->log.min_height) env->log.min_height = cur_h;
+        if (env->observations[h_obs_index] > env->log.max_height) env->log.max_height = env->observations[h_obs_index];
+        if (env->observations[h_obs_index] < env->log.min_height) env->log.min_height = env->observations[h_obs_index];
       }
       else  // if it's outside the sim region, just fill with 0s
       {
@@ -510,16 +531,6 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 
   env->rewards[0] = reward;
   env->terminals[0] = done ? 1.0f : 0.0f;
-
-  // velocity extremes for debugging — track true max/min per episode
-  if (dozer->vel_virtual_lift_arm > env->log.max_vel_arm) env->log.max_vel_arm = dozer->vel_virtual_lift_arm;
-  if (dozer->vel_virtual_lift_arm < env->log.min_vel_arm) env->log.min_vel_arm = dozer->vel_virtual_lift_arm;
-  if (dozer->vel_blade_pitch > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = dozer->vel_blade_pitch;
-  if (dozer->vel_blade_pitch < env->log.min_vel_blade_pitch) env->log.min_vel_blade_pitch = dozer->vel_blade_pitch;
-  // if (dozer->vel_blade_roll > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = dozer->vel_blade_roll;
-  // if (dozer->vel_blade_roll < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = dozer->vel_blade_roll;
-  if (dozer->twist_linear_x > env->log.max_vel_linear) env->log.max_vel_linear = dozer->twist_linear_x;
-  if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
 
   env->episode_return += reward;
   env->prev_error = cur_error;
@@ -1811,16 +1822,22 @@ static inline void env_reset(SoilEnv* env)
   memset(&env->log, 0, sizeof(Log));
   env->log.perf = 0.0f;
   env->log.n = 0.0f;
-  env->log.max_vel_arm = -1e9f;
-  env->log.max_vel_blade_pitch = -1e9f;
-  // env->log.max_vel_blade_roll = -1e9f;
-  env->log.max_vel_linear = -1e9f;
-  env->log.min_vel_arm = 1e9f;
-  env->log.min_vel_blade_pitch = 1e9f;
-  // env->log.min_vel_blade_roll = 1e9f;
-  env->log.min_vel_linear = 1e9f;
+
+  env->log.max_vel_arm          = -1e9f;
+  env->log.max_vel_blade_pitch  = -1e9f;
+  env->log.max_vel_blade_roll   = -1e9f;
+  env->log.max_vel_linear       = -1e9f;
+  env->log.max_vel_rotational   = -1e9f;
+  env->log.max_vel_blade_yaw    = -1e9f;
+  env->log.min_vel_arm          = -1e9f;
+  env->log.min_vel_blade_pitch  = -1e9f;
+  env->log.min_vel_blade_roll   = -1e9f;
+  env->log.min_vel_linear       = -1e9f;
+  env->log.min_vel_rotational   = -1e9f;
+  env->log.min_vel_blade_yaw    = -1e9f;
+
   env->log.max_height = -1e9f;
-  env->log.min_height = 1e9f;
+  env->log.min_height = -1e9f;
 }
 
 void c_reset(SoilEnv* env)
