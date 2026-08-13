@@ -192,7 +192,6 @@ typedef struct
 
   Dozer dozer;
   int step_num;
-  int tick;
   unsigned int rng;
 
   // Thread-safe precomputed FEE factors
@@ -210,11 +209,15 @@ typedef struct
   float count_off_map;
   float count_jitter;
   float count_large_neg_rewards;
-  float r1;
-  float r2;
-  float r3;
-  float r4;
-  float r5;
+
+  float goal_pile_x;
+  float goal_pile_y;
+
+  float start_x;
+  float start_y;
+
+  int forward;
+  int stage_1;
 } SoilEnv;
 
 typedef struct
@@ -404,40 +407,79 @@ static inline float cell_error_contrib(SoilEnv* env, int i, int j)
 static inline void update_reward_and_terminal(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
+
   float cur_error = env->cur_error;
   float prev_error = env->prev_error;
-
   float init = env->initial_error;
+
   float progress = (init - cur_error) / init;
   if (progress < 0.0f) progress = 0.0f;
   if (progress > 1.0f) progress = 1.0f;
-  // dense shaping: delta progress scaled
-  // float r_shaping = (cur_error - prev_error) * 1000 / init;
 
-  // penalties
-  // float r_time = -0.001f;
   float r_off_map = 0.0f;
 
   // off-map tracking (for logs)
   if (dozer->position_x < 0.0f || dozer->position_x > GRID_SIZE * CELL_SIZE ||
-      dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE) {
+      dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE)
+  {
     env->count_off_map += 1.0f;
-    r_off_map += -5.0;
+    r_off_map += -10.0;
   }
 
-  // float r_motion = dozer->vel_tracks_linear * 0.005;
-  float r_rotation = -1.0 * fabs(dozer->vel_tracks_rotational) * 0.05;
+  // we'll do some reward staging
 
-  // float r_surcharge = 0;
-  // if (dozer->blade_surcharge_Q > 0)
-  // {
-    // r_surcharge = 0.01;
-  // }
+  // --- stage 1 --- (100 mill)
+  // here we'll just reward moving in a pseudo-scripted fashion
+  // we want to move towards the pile location
+  float r_stage_1 = 0.0f;
 
-  // float reward = r_shaping + r_time + r_off_map + r_motion;
-  // float reward = r_shaping + r_time + r_off_map;
-  // float reward = r_off_map + r_motion + r_rotation + r_surcharge + (progress - env->prev_progress) * 100;
-  float reward = r_off_map + r_rotation + (progress - env->prev_progress) * 1000;
+  if (env->forward == 1 && env->stage_1 == 1)
+  {
+    float dist_pile_init = fabs(env->goal_pile_x - env->start_x) + fabs(env->goal_pile_y - env->start_y);
+    float dist_pile = fabs(env->goal_pile_x - dozer->position_x) + fabs(env->goal_pile_y - dozer->position_y);
+    float dist_arm = fabs(dozer->pos_virtual_lift_arm + 0.43f);
+    float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
+
+    float r_linear      = dozer->vel_tracks_linear * 0.05f;
+    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.1f;
+    float r_arm         = -1.0f * dist_arm * 0.5f;
+    float r_pitch       = -1.0f * dist_pitch * 0.5f;
+    float r_pile        = ((dist_pile_init - dist_pile) / (dist_pile_init * 50.0f));
+
+    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_pile;
+    if(dist_pile < 0.75f)
+    {
+      env->forward = 0;
+    }
+  }
+  else if(env->forward == 0 && env->stage_1 == 1)  // backward
+  {
+    float dist_pile_init = fabs(env->goal_pile_x - env->start_x) + fabs(env->goal_pile_y - env->start_y);
+    float dist_start = fabs(env->start_x - dozer->position_x) + fabs(env->start_y - dozer->position_y);
+    float dist_arm = fabs(dozer->pos_virtual_lift_arm + 0.33f);
+    float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
+
+    float r_linear      = -1.0f * dozer->vel_tracks_linear * 0.05f;
+    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.1f;
+    float r_arm         = -1.0f * dist_arm * 0.5f;
+    float r_pitch       = -1.0f * dist_pitch * 0.5f;
+    float r_start       = ((dist_pile_init - dist_start) / (dist_pile_init * 50.0f));
+
+    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_start;
+    // r_stage_1 = r_linear + r_rotational + r_arm + r_pitch;
+
+    if(dist_start < 0.25f)
+    {
+      env->forward = 1;
+    }
+  }
+
+  // scale by tick
+  r_stage_1 = r_stage_1 * 1.0f;
+
+  // float reward = r_off_map + r_stage_1 + (progress - env->prev_progress) * 1000;
+  float reward = r_off_map + r_stage_1;
+  // float reward = r_off_map;
 
   // success bonus + terminal
   int done = 0;
@@ -463,23 +505,16 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   if (dozer->twist_linear_x > env->log.max_vel_linear) env->log.max_vel_linear = dozer->twist_linear_x;
   if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
 
-  // logs for pufferlib — only counted when n=1 (episode done)
-  // env->log.r_shaping += r_shaping;
-  // env->log.r_time += r_time;
-  env->log.r_off_map += r_off_map;
   env->episode_return += reward;
-
   env->prev_error = cur_error;
   env->prev_progress = progress;
 
+  // logs for pufferlib — only counted when n=1 (episode done)
+  env->log.r_off_map += r_off_map;
   env->log.perf = progress;
   env->log.score = -cur_error; // lower error = higher score
-  // env->log.total_reward += reward;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
-  // env->log.count_large_neg_rewards = env->count_large_neg_rewards;
-  // env->log.count_off_map = env->count_off_map;
-  // env->log.count_jitter = env->count_jitter;
   env->log.n = done ? 1.0f : 0.0f;
 }
 
@@ -1171,16 +1206,41 @@ static inline void update_joint_pos(SoilEnv* env, float dt)
   Dozer * dozer = &env->dozer;
 
   dozer->pos_virtual_lift_arm += dozer->vel_virtual_lift_arm * dt;
-  if (dozer->pos_virtual_lift_arm < dozer->pos_virtual_lift_arm_min) dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_min;
-  if (dozer->pos_virtual_lift_arm > dozer->pos_virtual_lift_arm_max) dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_max;
+
+  if (dozer->pos_virtual_lift_arm < dozer->pos_virtual_lift_arm_min)
+  {
+    dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_min;
+    dozer->vel_virtual_lift_arm = 0;  // hit limit
+  }
+  if (dozer->pos_virtual_lift_arm > dozer->pos_virtual_lift_arm_max)
+  {
+    dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_max;
+    dozer->vel_virtual_lift_arm = 0;  // hit limit
+  }
 
   dozer->pos_blade_pitch += dozer->vel_blade_pitch * dt;
-  if (dozer->pos_blade_pitch < dozer->pos_blade_pitch_min) dozer->pos_blade_pitch = dozer->pos_blade_pitch_min;
-  if (dozer->pos_blade_pitch > dozer->pos_blade_pitch_max) dozer->pos_blade_pitch = dozer->pos_blade_pitch_max;
+  if (dozer->pos_blade_pitch < dozer->pos_blade_pitch_min)
+  {
+    dozer->pos_blade_pitch = dozer->pos_blade_pitch_min;
+    dozer->vel_blade_pitch = 0;  // hit limit
+  }
+  if (dozer->pos_blade_pitch > dozer->pos_blade_pitch_max)
+  {
+    dozer->pos_blade_pitch = dozer->pos_blade_pitch_max;
+    dozer->vel_blade_pitch = 0;  // hit limit
+  }
 
   dozer->pos_blade_roll += dozer->vel_blade_roll * dt;
-  if (dozer->pos_blade_roll < dozer->pos_blade_roll_min) dozer->pos_blade_roll = dozer->pos_blade_roll_min;
-  if (dozer->pos_blade_roll > dozer->pos_blade_roll_max) dozer->pos_blade_roll = dozer->pos_blade_roll_max;
+  if (dozer->pos_blade_roll < dozer->pos_blade_roll_min)
+  {
+    dozer->pos_blade_roll = dozer->pos_blade_roll_min;
+    dozer->vel_blade_roll = 0;  // hit limit
+  }
+  if (dozer->pos_blade_roll > dozer->pos_blade_roll_max)
+  {
+    dozer->pos_blade_roll = dozer->pos_blade_roll_max;
+    dozer->vel_blade_roll = 0;  // hit limit
+  }
 }
 
 static inline void simulate_erosion(SoilEnv* env, const int num_loops)
@@ -1532,11 +1592,17 @@ static inline void generate_goal_map(SoilEnv* env)
   float theta = 0;
   float dir_x = cosf(theta),  dir_y = sinf(theta);
   float perp_x = -dir_y,      perp_y = dir_x;
-  float start_x = dozer->position_x + 2.0f;
-  float start_y = dozer->position_y;
+
+  env->start_x = dozer->position_x + 2.0f;
+  env->start_y = dozer->position_y;
+
+  float start_x = env->start_x;
+  float start_y = env->start_y;
 
   float total_len = slot_len + pile_len;
   float half_pile = pile_len * 0.5f;
+  env->goal_pile_x = slot_len + (pile_len * 0.5) + dozer->position_x;
+  env->goal_pile_y = start_y;
 
   // Gaussian pile: bell-shaped mound with ~30° repose, volume-matched to cut*swell
   // Two-pass to preserve exact volume: first pass sum raw Gaussian, second apply scaled heights
@@ -1616,10 +1682,11 @@ static inline void env_reset(SoilEnv* env)
 
   // rewards
   // env->log.total_reward = 0;
-  env->log.r_shaping = 0;
+  // env->log.r_shaping = 0;
   env->log.r_off_map = 0;
   env->log.r_time = 0;
-
+  env->forward = 1;
+  env->stage_1 = 1;
   Dozer* dozer = &env->dozer;
 
   // dimensions | m
@@ -1740,7 +1807,6 @@ static inline void env_reset(SoilEnv* env)
 
 void c_reset(SoilEnv* env)
 {
-  env->tick = 0;
   env->step_num = 0;
   memset(&env->dozer, 0, sizeof(Dozer));
   env_reset(env);
@@ -1750,7 +1816,7 @@ void c_reset(SoilEnv* env)
 void c_step(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
-  env->tick +=1;
+  env->step_num +=1;
 
   // get inputs
   // Continuous acitons: Clamp to [-1, 1] and then threshold
@@ -1768,7 +1834,7 @@ void c_step(SoilEnv* env)
   // Single physics step per control action (no top-level sub-stepping for now).
   // Soil erosion still sub-loops internally (see simulate_erosion, num_loops=3).
   // Revisit if the main loop proves unstable once we run/test the sim.
-  simulate_step(env, 0.0167);
+  simulate_step(env, 0.02);
 
   // get observations (rewards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
