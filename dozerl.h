@@ -304,16 +304,17 @@ static inline void get_obs(SoilEnv* env)
   Dozer * dozer = &env->dozer;
 
   // get observations. First [0-10] are proprioceptive (10 + noisy surcharge), rest are map (2x50x50)
-  env->observations[0]  = dozer->pos_virtual_lift_arm;
-  env->observations[1]  = dozer->pos_blade_pitch;
-  env->observations[2]  = dozer->pos_blade_roll;
-  env->observations[3]  = dozer->pos_blade_yaw;  // we still observe this, even without direct control
-  env->observations[4]  = dozer->vel_tracks_rotational;
-  env->observations[5]  = dozer->vel_tracks_linear;
-  env->observations[6]  = dozer->vel_virtual_lift_arm;
-  env->observations[7]  = dozer->vel_blade_pitch;
-  env->observations[8]  = dozer->vel_blade_roll;
-  env->observations[9]  = dozer->vel_blade_yaw;  // this one, however, may not be necessary..?
+  // Normalized to ~[-1,1] for stable value/policy learning (PufferLib has no auto obs norm)
+  env->observations[0]  = dozer->pos_virtual_lift_arm * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[1]  = dozer->pos_blade_pitch * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[2]  = dozer->pos_blade_roll * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[3]  = dozer->pos_blade_yaw * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[4]  = dozer->vel_tracks_rotational / 2.0f;
+  env->observations[5]  = dozer->vel_tracks_linear / 3.0f;
+  env->observations[6]  = dozer->vel_virtual_lift_arm / 2.0f;
+  env->observations[7]  = dozer->vel_blade_pitch / 2.0f;
+  env->observations[8]  = dozer->vel_blade_roll / 2.0f;
+  env->observations[9]  = dozer->vel_blade_yaw / 2.0f;
   // Noisy surcharge: real platform would estimate from cylinder pressure,
   // so model as ±20% multiplicative + ±500N additive, normalized to ~1.0 ≈ 15kN loaded
   {
@@ -349,10 +350,11 @@ static inline void get_obs(SoilEnv* env)
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
       // if the selected env grid is within bounds of the sim region, grab the underlying map data
+      // Normalize height deltas by 0.5m (typical slot depth 0.15-0.25m, pile ~1m) to keep in ~[-2,2]
       if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
       {
-        env->observations[h_obs_index] = (env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - dozer->position_z;
-        env->observations[g_obs_index] = env->grid_G[grid_i][grid_j] - dozer->position_z;
+        env->observations[h_obs_index] = ((env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - dozer->position_z) / 0.5f;
+        env->observations[g_obs_index] = (env->grid_G[grid_i][grid_j] - dozer->position_z) / 0.5f;
       }
       else  // if it's outside the sim region, just fill with 0s
       {
@@ -441,12 +443,13 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
 
     float r_linear      = dozer->vel_tracks_linear * 0.05f;
-    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.1f;
-    float r_arm         = -1.0f * dist_arm * 0.5f;
-    float r_pitch       = -1.0f * dist_pitch * 0.5f;
+    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.02f;
+    float r_arm         = -1.0f * dist_arm * 0.05f;
+    float r_pitch       = -1.0f * dist_pitch * 0.05f;
     float r_pile        = ((dist_pile_init - dist_pile) / (dist_pile_init * 50.0f));
+    float r_energy      = -0.01f * (dozer->effort_linear*dozer->effort_linear + dozer->effort_rotational*dozer->effort_rotational + dozer->effort_lift*dozer->effort_lift + dozer->effort_pitch*dozer->effort_pitch);
 
-    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_pile;
+    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_pile + r_energy;
     if(dist_pile < 0.75f)
     {
       env->forward = 0;
@@ -460,12 +463,13 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
 
     float r_linear      = -1.0f * dozer->vel_tracks_linear * 0.05f;
-    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.1f;
-    float r_arm         = -1.0f * dist_arm * 0.5f;
-    float r_pitch       = -1.0f * dist_pitch * 0.5f;
+    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.02f;
+    float r_arm         = -1.0f * dist_arm * 0.05f;
+    float r_pitch       = -1.0f * dist_pitch * 0.05f;
     float r_start       = ((dist_pile_init - dist_start) / (dist_pile_init * 50.0f));
+    float r_energy      = -0.01f * (dozer->effort_linear*dozer->effort_linear + dozer->effort_rotational*dozer->effort_rotational + dozer->effort_lift*dozer->effort_lift + dozer->effort_pitch*dozer->effort_pitch);
 
-    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_start;
+    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_start + r_energy;
     // r_stage_1 = r_linear + r_rotational + r_arm + r_pitch;
 
     if(dist_start < 0.25f)
@@ -477,9 +481,14 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   // scale by tick
   r_stage_1 = r_stage_1 * 1.0f;
 
-  // float reward = r_off_map + r_stage_1 + (progress - env->prev_progress) * 1000;
-  float reward = r_off_map + r_stage_1;
-  // float reward = r_off_map;
+  // Dense soil-moving signal: scaled progress delta (0-1 normalized) + small survival bonus
+  // Previous commented scale 1000 was 100x too large vs r_stage_1 ~0.1; 20 keeps it comparable.
+  float r_progress = (progress - env->prev_progress) * 20.0f;
+  if (r_progress > 1.0f) r_progress = 1.0f;
+  if (r_progress < -1.0f) r_progress = -1.0f;
+  // Alternative volume-form: (env->prev_error - cur_error) * 10.0f gives similar magnitude
+  float r_survival = 0.02f;
+  float reward = r_off_map + r_stage_1 + r_progress + r_survival;
 
   // success bonus + terminal
   int done = 0;
@@ -1722,12 +1731,12 @@ static inline void env_reset(SoilEnv* env)
   dozer->roll_inertia = 80.0f;
   dozer->pitch_intertia = 19.0f;
 
-  // damping
-  dozer->hydraulic_stiffness = 0.9998f;
-  dozer->track_damping = 3.0f; // (30000 / 8570)
-  dozer->virtual_lift_arm_damping = 30000.0f;
-  dozer->blade_pitch_damping = 5000.0f;
-  dozer->blade_roll_damping = 5000.0f;
+  // damping - retuned: lift/pitch were 10k× track, forcing bang-bang to move
+  dozer->hydraulic_stiffness = 0.998f;
+  dozer->track_damping = 3.0f;
+  dozer->virtual_lift_arm_damping = 8000.0f;
+  dozer->blade_pitch_damping = 1500.0f;
+  dozer->blade_roll_damping = 1500.0f;
 
   // limits | rad
   dozer->pos_virtual_lift_arm_min = -0.5f;

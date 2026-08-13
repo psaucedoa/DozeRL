@@ -26,7 +26,7 @@ void demo(const char* checkpoint_path)
     int input_dim = 5011;
     int hidden_dim = 512;
     int num_layers = 2;
-    int logit_sizes[6] = {1, 1, 1, 1, 1, 1};
+    int logit_sizes[4] = {1, 1, 1, 1};
     int num_actions = 4;
 
     net = make_puffernet(
