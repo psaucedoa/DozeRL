@@ -453,7 +453,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
       dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE)
   {
     env->count_off_map += 1.0f;
-    r_off_map += -10.0;
+    r_off_map += -0.1;
   }
 
   // we'll do some reward staging
@@ -1750,11 +1750,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->pitch_intertia = 19.0f;
 
   // damping - retuned: lift/pitch were 10k× track, forcing bang-bang to move
-  dozer->hydraulic_stiffness = 0.998f;
+  dozer->hydraulic_stiffness = 0.9998f;
   dozer->track_damping = 3.0f;
-  dozer->virtual_lift_arm_damping = 8000.0f;
-  dozer->blade_pitch_damping = 1500.0f;
-  dozer->blade_roll_damping = 1500.0f;
+  dozer->virtual_lift_arm_damping = 30000.0f;
+  dozer->blade_pitch_damping = 5000.0f;
+  dozer->blade_roll_damping = 5000.0f;
 
   // limits | rad
   dozer->pos_virtual_lift_arm_min = -0.5f;
