@@ -25,5 +25,7 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "r_shaping", log->r_shaping);
     dict_set(out, "r_off_map", log->r_off_map);
     dict_set(out, "r_time", log->r_time);
+    dict_set(out, "max height", log->max_height);
+    dict_set(out, "min height", log->min_height);
     dict_set(out, "n", log->n);
 }

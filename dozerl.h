@@ -46,6 +46,9 @@ typedef struct {
     float r_off_map;
     float r_time;
 
+    float max_height; // max observed heightmap cell (grid_H+grid_L) per episode
+    float min_height; // min observed heightmap cell per episode
+
     float n; // Required as the last field
 } Log;
 
@@ -353,8 +356,12 @@ static inline void get_obs(SoilEnv* env)
       // Normalize height deltas by 0.5m (typical slot depth 0.15-0.25m, pile ~1m) to keep in ~[-2,2]
       if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
       {
-        env->observations[h_obs_index] = ((env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - dozer->position_z) / 0.5f;
+        float cur_h = env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
+        env->observations[h_obs_index] = (cur_h - dozer->position_z) / 0.5f;
         env->observations[g_obs_index] = (env->grid_G[grid_i][grid_j] - dozer->position_z) / 0.5f;
+        // track max & min observed raw heightmap cell for PufferLib logging
+        if (cur_h > env->log.max_height) env->log.max_height = cur_h;
+        if (cur_h < env->log.min_height) env->log.min_height = cur_h;
       }
       else  // if it's outside the sim region, just fill with 0s
       {
@@ -1812,6 +1819,8 @@ static inline void env_reset(SoilEnv* env)
   env->log.min_vel_blade_pitch = 1e9f;
   // env->log.min_vel_blade_roll = 1e9f;
   env->log.min_vel_linear = 1e9f;
+  env->log.max_height = -1e9f;
+  env->log.min_height = 1e9f;
 }
 
 void c_reset(SoilEnv* env)
