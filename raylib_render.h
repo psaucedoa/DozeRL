@@ -12,7 +12,7 @@ static int camera_view = 0; // 0: x-y top, 1: y-z side, 2: x-z front — cycled 
 static inline void init_render()
 {
   InitWindow(1920, 1080, "DozeRL Simulator");
-  SetTargetFPS(60);
+  SetTargetFPS(50);
 
   camera.position = (Vector3){ 15.0f, 15.0f, 15.0f };
   camera.target = (Vector3){ 5.0f, 0.0f, 5.0f };
