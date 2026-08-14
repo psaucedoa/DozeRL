@@ -312,7 +312,7 @@ static inline void get_obs(SoilEnv* env)
   env->observations[2]  = dozer->pos_blade_roll * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
   env->observations[3]  = dozer->pos_blade_yaw * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
   env->observations[4]  = dozer->vel_tracks_rotational * 0.5f;
-  env->observations[5]  = dozer->vel_tracks_linear * 0.333f;
+  env->observations[5]  = dozer->vel_tracks_linear * 0.25f;
   env->observations[6]  = dozer->vel_virtual_lift_arm * 0.5f;
   env->observations[7]  = dozer->vel_blade_pitch * 0.1f;
   env->observations[8]  = dozer->vel_blade_roll * 0.5f;
@@ -378,8 +378,8 @@ static inline void get_obs(SoilEnv* env)
       {
         float cur_h = env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
         float goal_h = env->grid_G[grid_i][grid_j];
-        env->observations[h_obs_index] = (cur_h - dozer->position_z) * 0.5f;
-        env->observations[g_obs_index] = (cur_h - goal_h) * 0.5f;
+        env->observations[h_obs_index] = (cur_h - dozer->position_z) * 0.25f;
+        env->observations[g_obs_index] = (cur_h - goal_h) * 0.25f;
         // track max & min observed raw heightmap cell for PufferLib logging
         if (env->observations[h_obs_index] > env->log.max_height) env->log.max_height = env->observations[h_obs_index];
         if (env->observations[h_obs_index] < env->log.min_height) env->log.min_height = env->observations[h_obs_index];
@@ -444,50 +444,97 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   float prev_error = env->prev_error;
   float init = env->initial_error;
 
-  float progress = (init - cur_error) / init;
-  if (progress < 0.0f) progress = 0.0f;
-  if (progress > 1.0f) progress = 1.0f;
+  float delta_error = (env->prev_error - cur_error) / (init + 1e-6f);
+  float r_progress = delta_error * 20.0f;
 
-  float r_off_map = 0.0f;
-
-  // off-map tracking (for logs)
-  if (dozer->position_x < 0.0f || dozer->position_x > GRID_SIZE * CELL_SIZE ||
-      dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE)
-  {
-    env->count_off_map += 1.0f;
-    r_off_map += -0.1;
-  }
-
-  // Dense soil-moving signal: scaled progress delta (0-1 normalized) + small survival bonus
-  // Previous commented scale 1000 was 100x too large vs r_stage_1 ~0.1; 20 keeps it comparable.
-  float r_progress = (progress - env->prev_progress) * 20.0f;
+  // Clamp delta to prevent single-frame physics glitch spikes
   if (r_progress > 1.0f) r_progress = 1.0f;
   if (r_progress < -1.0f) r_progress = -1.0f;
 
-  float reward = r_off_map + r_progress;
+  // we'll do some reward staging
 
-  // success bonus + terminal
+  // --- stage 1 --- (100 mill)
+  // here we'll just reward moving in a pseudo-scripted fashion
+  // we want to move towards the pile location
+  float r_stage_1 = 0.0f;
+
+  if (env->forward == 1 && env->stage_1 == 1)
+  {
+    float dist_pile_init = fabs(env->goal_pile_x - env->start_x) + fabs(env->goal_pile_y - env->start_y);
+    float dist_pile = fabs(env->goal_pile_x - dozer->position_x) + fabs(env->goal_pile_y - dozer->position_y);
+    float dist_arm = fabs(dozer->pos_virtual_lift_arm + 0.43f);
+    float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
+
+    float r_linear      = dozer->vel_tracks_linear * 0.05f;
+    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.1f;
+    float r_arm         = -1.0f * dist_arm * 0.5f;
+    float r_pitch       = -1.0f * dist_pitch * 0.5f;
+    float r_pile        = ((dist_pile_init - dist_pile) / (dist_pile_init * 50.0f));
+
+    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_pile;
+    if(dist_pile < 0.75f)
+    {
+      env->forward = 0;
+    }
+  }
+  else if(env->forward == 0 && env->stage_1 == 1)  // backward
+  {
+    float dist_pile_init = fabs(env->goal_pile_x - env->start_x) + fabs(env->goal_pile_y - env->start_y);
+    float dist_start = fabs(env->start_x - dozer->position_x) + fabs(env->start_y - dozer->position_y);
+    float dist_arm = fabs(dozer->pos_virtual_lift_arm + 0.33f);
+    float dist_pitch = fabs(dozer->pos_blade_pitch - 0.5f);
+
+    float r_linear      = -1.0f * dozer->vel_tracks_linear * 0.05f;
+    float r_rotational  = -1.0f * fabs(dozer->vel_tracks_rotational) * 0.1f;
+    float r_arm         = -1.0f * dist_arm * 0.5f;
+    float r_pitch       = -1.0f * dist_pitch * 0.5f;
+    float r_start       = ((dist_pile_init - dist_start) / (dist_pile_init * 50.0f));
+
+    r_stage_1 = r_linear + r_rotational + r_arm + r_pitch + r_start;
+    // r_stage_1 = r_linear + r_rotational + r_arm + r_pitch;
+
+    if(dist_start < 0.25f)
+    {
+      env->forward = 1;
+    }
+  }
+
+  // scale by tick
+  r_stage_1 = r_stage_1 * 1.0f;
+
+  // float reward = r_off_map + r_stage_1 + (progress - env->prev_progress) * 1000;
+  float reward = r_stage_1 + r_progress;
+
+  // 2. Off-map check: hard termination prevents endless negative reward accumulation
   int done = 0;
-  if (cur_error < 0.02f * init) {
+
+  float max_bound = GRID_SIZE * CELL_SIZE;
+  if (dozer->position_x < 0.0f || dozer->position_x > max_bound ||
+      dozer->position_y < 0.0f || dozer->position_y > max_bound)
+  {
+    env->count_off_map += 1.0f;
+  }
+
+  // 3. Success check
+  else if (cur_error < 0.02f * init) {
     reward += 5.0f;
     done = 1;
   }
-
-  // time limit (1 min at 60Hz control = 3600 steps)
-  if (env->step_num >= 3600) done = 1;
-  // if (env->count_off_map > 100.0f) done = 1; // persistent off-map
+  // 4. Timeout check
+  else if (env->step_num >= 3600) {
+    done = 1;
+  }
 
   env->rewards[0] = reward;
-  env->terminals[0] = done ? 1.0f : 0.0f;
+  env->terminals[0] = (float)done;
 
   env->episode_return += reward;
   env->prev_error = cur_error;
-  env->prev_progress = progress;
 
-  // logs for pufferlib — only counted when n=1 (episode done)
-  env->log.r_off_map += r_off_map;
-  env->log.perf = progress;
-  env->log.score = -cur_error; // lower error = higher score
+  // Logs for PufferLib
+  env->log.r_off_map = env->count_off_map;
+  env->log.perf = (init - cur_error) / (init + 1e-6f);
+  env->log.score = -cur_error;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
   env->log.n = done ? 1.0f : 0.0f;
