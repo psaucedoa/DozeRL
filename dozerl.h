@@ -404,8 +404,9 @@ static inline float compute_terrain_error(SoilEnv* env)
       float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
       float goal = env->grid_G[i][j];
       float contrib;
-      if (region == 1) { // CUT: need cur <= goal, penalize under-cut fully, over-cut 0.2x
-        float over = cur_h - goal; // >0 means still above goal, need more cut
+      if (region == 1) { // CUT: need cur <= goal; ignore pile-up above original (blade accumulation + swell)
+        float effective_h = fminf(cur_h, env->original_H[i][j]);
+        float over = effective_h - goal; // >0 means still above goal, need more cut
         contrib = (over > 0.0f) ? over : -over * 0.2f;
       } else { // region==2 FILL: need cur >= goal
         float under = goal - cur_h; // >0 means still below goal, need more fill
@@ -424,7 +425,8 @@ static inline float cell_error_contrib(SoilEnv* env, int i, int j)
   float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
   float goal = env->grid_G[i][j];
   if (region == 1) {
-    float over = cur_h - goal;
+    float effective_h = fminf(cur_h, env->original_H[i][j]);
+    float over = effective_h - goal;
     float contrib = (over > 0.0f) ? over : -over * 0.2f;
     return contrib * CELL_SIZE * CELL_SIZE;
   } else {
