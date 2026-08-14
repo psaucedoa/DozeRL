@@ -16,9 +16,9 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "score", log->score);
     dict_set(out, "episode_return", log->episode_return);
     dict_set(out, "episode_length", log->episode_length);
-    dict_set(out, "r_shaping", log->r_shaping);
+    dict_set(out, "r_push", log->r_push);
+    dict_set(out, "r_progress", log->r_progress);
     dict_set(out, "r_off_map", log->r_off_map);
-    dict_set(out, "r_time", log->r_time);
 
     dict_set(out, "max_obs_vel_arm",         log->max_vel_arm);
     dict_set(out, "max_obs_vel_blade_pitch", log->max_vel_blade_pitch);
