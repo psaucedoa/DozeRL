@@ -43,6 +43,7 @@ typedef struct {
     // float total_reward;
     float r_push;
     float r_progress;
+    float r_stationary;
     float r_off_map;
 
     float max_height; // max observed heightmap cell (grid_H+grid_L) per episode
@@ -467,8 +468,13 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   }
 
   // pushing reward
-  float r_push = dozer->blade_surcharge_Q * 0.001 * dozer->twist_linear_x * 0.05f;
-  reward += r_push;
+  float r_push = 0.0f;
+
+  if(dozer->twist_linear_x > 0.0f)
+  {
+    r_push = dozer->blade_surcharge_Q * 0.001 * dozer->twist_linear_x * 0.05f;
+    reward += r_push;
+  }
 
   // stationary penalty
   float r_stationary = 0.0f;
@@ -501,6 +507,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->log.r_off_map = env->count_off_map;
   env->log.r_progress += r_progress;
   env->log.r_push += r_push;
+  env->log.r_stationary += r_stationary;
   env->log.perf = (init - cur_error) / (init + 1e-6f);
   env->log.score = -cur_error;
   env->log.episode_return = env->episode_return;
@@ -1500,7 +1507,15 @@ static inline void update_surcharge(SoilEnv* env)
       // Check if the cell is inside the 1.5m box on the working side of the blade
       if (local_x >= 0.0f && local_x <= lookahead && fabsf(local_y) <= half_width)
       {
-        current_surcharge_vol += env->grid_L[i][j] * cell_area;
+        // Only count loose soil at or above the bottom edge of the blade at this lateral position
+        float section_blade_z = dozer->blade_z + local_y * y_axis_world[2];
+        float total_h = env->grid_H[i][j] + env->grid_L[i][j];
+        if (total_h <= section_blade_z) continue;
+        float h_hard = env->grid_H[i][j];
+        float effective_loose = total_h - fmaxf(h_hard, section_blade_z);
+        if (effective_loose <= 0.0f) continue;
+        if (effective_loose > env->grid_L[i][j]) effective_loose = env->grid_L[i][j];
+        current_surcharge_vol += effective_loose * cell_area;
       }
     }
   }
@@ -1673,6 +1688,7 @@ static inline void env_reset(SoilEnv* env)
   // rewards
   env->log.r_off_map = 0;
   env->log.r_push = 0;
+  env->log.r_stationary = 0;
   env->log.r_progress = 0;
   env->forward = 1;
   env->stage_1 = 1;

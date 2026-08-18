@@ -19,6 +19,7 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "r_push", log->r_push);
     dict_set(out, "r_progress", log->r_progress);
     dict_set(out, "r_off_map", log->r_off_map);
+    dict_set(out, "r_stationary", log->r_stationary);
 
     dict_set(out, "max_obs_vel_arm",         log->max_vel_arm);
     dict_set(out, "max_obs_vel_blade_pitch", log->max_vel_blade_pitch);
