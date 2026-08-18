@@ -425,20 +425,9 @@ static inline float compute_terrain_error(SoilEnv* env)
 
 static inline float cell_error_contrib(SoilEnv* env, int i, int j)
 {
-  char region = env->map_region[i][j];
-  if (region == 0) return 0.0f;
   float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
   float goal = env->grid_G[i][j];
-  if (region == 1) {
-    float effective_h = fminf(cur_h, env->original_H[i][j]);
-    float over = effective_h - goal;
-    float contrib = (over > 0.0f) ? over : -over * 0.2f;
-    return contrib * CELL_SIZE * CELL_SIZE;
-  } else {
-    float under = goal - cur_h;
-    float contrib = (under > 0.0f) ? under : -under * 0.2f;
-    return contrib * CELL_SIZE * CELL_SIZE;
-  }
+  return contrib * CELL_SIZE * CELL_SIZE;
 }
 
 static inline void update_reward_and_terminal(SoilEnv* env)
@@ -450,7 +439,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   float init = env->initial_error;
 
   float delta_error = (env->prev_error - cur_error) / (init + 1e-6f);
-  float r_progress = delta_error * 20.0f;
+  float r_progress = delta_error * 50.0f;
 
   // Clamp delta to prevent single-frame physics glitch spikes
   if (r_progress > 1.0f) r_progress = 1.0f;
@@ -467,16 +456,15 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     env->count_off_map += 1.0f;
   }
 
-  // pushing reward
+  // pushing reward - if we are moving forward and pushing soil (maybe make dir independent)
   float r_push = 0.0f;
-
   if(dozer->twist_linear_x > 0.0f)
   {
     r_push = dozer->blade_surcharge_Q * 0.001 * dozer->twist_linear_x * 0.05f;
     reward += r_push;
   }
 
-  // stationary penalty
+  // stationary penalty -
   float r_stationary = 0.0f;
   if (fabs(dozer->twist_linear_x) < 0.1f)
   {
@@ -1084,8 +1072,8 @@ static inline void interact_with_soil(SoilEnv* env)
         if (env->grid_L[x0][y0] > 0.0f)
         {
           float l_cut = (depth < env->grid_L[x0][y0]) ? depth : env->grid_L[x0][y0];
-          env->grid_L[x0][y0] -= l_cut; 
-          depth -= l_cut; 
+          env->grid_L[x0][y0] -= l_cut;
+          depth -= l_cut;
           cell_cut_vol += l_cut * CELL_SIZE * CELL_SIZE;
         }
         if (depth > 0.0f)
