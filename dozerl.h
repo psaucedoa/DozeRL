@@ -8,9 +8,10 @@
 #include <string.h>
 
 // GLOBAL PARAMS
-#define SPATIAL_OBS_SIZE 50  // grid size for the map observations
+#define SPATIAL_OBS_SIZE 100  // grid size for the map observations
 #define GRID_SIZE 150
 #define CELL_SIZE 0.2f
+#define CELL_AREA (CELL_SIZE * CELL_SIZE)
 #define EROSION_MARGIN 20  // cells buffered around the blade for slumping (~4.0m at CELL_SIZE=0.2f); keep in sync with CELL_SIZE
 #define EROSION_WIN (2 * EROSION_MARGIN + 1)  // side length of the local erosion scratch window
 #define GRAVITY 9.81f
@@ -41,10 +42,10 @@ typedef struct {
     float min_vel_blade_yaw;
     // reward signals per ep
     // float total_reward;
-    float r_push;
     float r_progress;
+    float r_goal_obs;
+    float r_push;
     float r_stationary;
-    float r_off_map;
 
     float max_height; // max observed heightmap cell (grid_H+grid_L) per episode
     float min_height; // min observed heightmap cell per episode
@@ -165,18 +166,17 @@ typedef struct
 
 typedef struct
 {
-  Log log; // Required field. Env binding code uses this to aggregate logs
-  float* observations; // Required
-  float* actions; // Required
-  float* rewards; // Required
-  float* terminals; // Required
+  Log log;              // Required field. Env binding code uses this to aggregate logs
+  float* observations;  // Required
+  float* actions;       // Required
+  float* rewards;       // Required
+  float* terminals;     // Required
   int num_agents;
 
   // maps
   float grid_H[GRID_SIZE][GRID_SIZE];     // (m) Hard Soil
   float grid_L[GRID_SIZE][GRID_SIZE];     // (m) Loose Soil
   float grid_G[GRID_SIZE][GRID_SIZE];     // (m) Goal Map
-  float original_H[GRID_SIZE][GRID_SIZE]; // (m) Original Terrain Map (to prevent moving soil penalty)
   char map_region[GRID_SIZE][GRID_SIZE];  // ( ) 0=Neutral, 1=Cut, 2=Fill
 
   // height params (may change episode-to-episode)
@@ -184,14 +184,14 @@ typedef struct
   float dH_max;     // expected maximum displacement per cell
 
   // soil params (may change episode-to-episode)
-  float swell_ratio;         // ( )       Volumetric change when going from compact to loose soil
-  float loose_soil_density;  // (kg/m^3 ) Density
-  float soil_c;  // soil cohesion
-  float soil_c_a;  // adhesion
-  float soil_phi;  // soil internal friction angle
+  float swell_ratio;          // ( )       Volumetric change when going from compact to loose soil
+  float loose_soil_density;   // (kg/m^3 ) Density
+  float soil_c;               // soil cohesion
+  float soil_c_a;             // adhesion
+  float soil_phi;             // soil internal friction angle
   float soil_delta;
-  float soil_gamma;  // moist? unit weight of soil
-  float soil_q_u; // soil ultimate bearing capacity | NOTE: Since we're dealing with 'homogenous' soil properties, we can effectively just calculate this once!
+  float soil_gamma;           // moist? unit weight of soil
+  float soil_q_u;             // soil ultimate bearing capacity | NOTE: Since we're dealing with 'homogenous' soil properties, we can effectively just calculate this once!
 
   Dozer dozer;
   int step_num;
@@ -204,14 +204,15 @@ typedef struct
   float N_ca;
 
   // Log metrics
-  float initial_error;
-  float cur_error; // incremental volume error over cut/fill zone
-  float prev_progress;
-  float prev_error;
+  float initial_error_absolute;
+  float initial_error_goal;
+
+  float map_error_absolute;     // raw error across entire map wrt goal map [fabs(state - goal) * CELL_SIZE * CELL_SIZE]
+  float map_error_goal;         // error in the cut and pile regions
+  float map_error_goal_prev;    // error in the cut and pile regions
+  float map_error_directional;  // error in the cut and pile regions, with certain criteria in mind
+  float map_error_directional_prev;  // error in the cut and pile regions, with certain criteria in mind
   float episode_return;
-  float count_off_map;
-  float count_jitter;
-  float count_large_neg_rewards;
 
   float goal_pile_x;
   float goal_pile_y;
@@ -374,7 +375,7 @@ static inline void get_obs(SoilEnv* env)
       // if the selected env grid is within bounds of the sim region, grab the underlying map data
       // Channel 0: current height relative to chassis (as before)
       // Channel 1: now difference current - goal (error map) instead of absolute goal height
-      // Both normalized by 0.5m (-> ~[-2,2] for typical 0.25m cut / 1m pile)
+      // Both div by 0.25m (~ within [-1,1])
       if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
       {
         float cur_h = env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
@@ -398,106 +399,93 @@ static inline void get_obs(SoilEnv* env)
   }
 }
 
-static inline float compute_terrain_error(SoilEnv* env)
-{
-  float err = 0.0f;
-  float cell_area = CELL_SIZE * CELL_SIZE;
-  for (int i = 0; i < GRID_SIZE; i++) {
-    for (int j = 0; j < GRID_SIZE; j++) {
-      char region = env->map_region[i][j];
-      if (region == 0) continue; // neutral: free transit (option A)
-      float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
-      float goal = env->grid_G[i][j];
-      float contrib;
-      if (region == 1) { // CUT: need cur <= goal; ignore pile-up above original (blade accumulation + swell)
-        float effective_h = fminf(cur_h, env->original_H[i][j]);
-        float over = effective_h - goal; // >0 means still above goal, need more cut
-        contrib = (over > 0.0f) ? over : -over * 0.2f;
-      } else { // region==2 FILL: need cur >= goal
-        float under = goal - cur_h; // >0 means still below goal, need more fill
-        contrib = (under > 0.0f) ? under : -under * 0.2f;
-      }
-      err += contrib * cell_area;
-    }
-  }
-  return err;
-}
-
-static inline float cell_error_contrib(SoilEnv* env, int i, int j)
+static inline float cell_error_absolute(SoilEnv* env, int i, int j)
 {
   float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
   float goal = env->grid_G[i][j];
-  return contrib * CELL_SIZE * CELL_SIZE;
+  float diff = fabs(cur_h - goal);  // absolute diff
+  return diff * CELL_AREA;
+}
+
+static inline float cell_error_directional(SoilEnv* env, int i, int j)
+{
+  float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
+  float goal = env->grid_G[i][j];
+  float diff = fabs(cur_h - goal);  // absolute diff
+  return diff * CELL_AREA;
+}
+
+static inline float compute_terrain_error(SoilEnv* env)
+{
+  float err = 0.0f;
+  for (int i = 0; i < GRID_SIZE; i++)
+  {
+    for (int j = 0; j < GRID_SIZE; j++)
+    {
+      err += cell_error_absolute(env, i, j);
+    }
+  }
+  return err;
 }
 
 static inline void update_reward_and_terminal(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  float cur_error = env->cur_error;
-  float prev_error = env->prev_error;
-  float init = env->initial_error;
+  // progress reward
+  // how we sturcture this also depends on if we want to reward for % completed of task, or amount of error corrected
+  // ('per-task' vs 'per-action')
+  float r_progress = (env->map_error_goal_prev - env->map_error_goal) * 5.0f;
+  env->map_error_goal_prev = env->map_error_goal;
+  // delta = delta / (CELL_AREA * CELL_SIZE);  // this could be simplified by just normalizing by # of cells...
 
-  float delta_error = (env->prev_error - cur_error) / (init + 1e-6f);
-  float r_progress = delta_error * 50.0f;
-
-  // Clamp delta to prevent single-frame physics glitch spikes
-  if (r_progress > 1.0f) r_progress = 1.0f;
-  if (r_progress < -1.0f) r_progress = -1.0f;
-
-  float reward = r_progress;
-  int done = 0;
-
-  // 2. Off-map check: hard termination prevents endless negative reward accumulation
-  float max_bound = GRID_SIZE * CELL_SIZE;
-  if (dozer->position_x < 0.0f || dozer->position_x > max_bound ||
-      dozer->position_y < 0.0f || dozer->position_y > max_bound)
-  {
-    env->count_off_map += 1.0f;
-  }
+  // goal observability reward
+  float r_goal_obs = 0.0f;
 
   // pushing reward - if we are moving forward and pushing soil (maybe make dir independent)
   float r_push = 0.0f;
-  if(dozer->twist_linear_x > 0.0f)
+  if (dozer->twist_linear_x > 0.1f && dozer->blade_surcharge_Q > 1000.0f)
   {
-    r_push = dozer->blade_surcharge_Q * 0.001 * dozer->twist_linear_x * 0.05f;
-    reward += r_push;
+    r_push = 0.01f;
   }
 
-  // stationary penalty -
+  // stationary penalty
   float r_stationary = 0.0f;
   if (fabs(dozer->twist_linear_x) < 0.1f)
   {
-    r_stationary = 0.05f;
-    reward -= r_stationary;
+    r_stationary = -0.02f;
   }
 
-  // jitter penalty
-  // maybe...
+  // jitter penalty, maybe
 
-  // 3. Success check
-  else if (cur_error < 0.02f * init) {
-    reward += 5.0f;
+  // Success check
+  float perf = 1.0f - (env->map_error_goal / env->initial_error_goal);
+  float r_success = 0.0f;
+  int done = 0;
+  if (perf > 0.5f)
+  {
+    r_success = 5.0f;
     done = 1;
   }
-  // 4. Timeout check
-  else if (env->step_num >= 3600) {
+
+  // Timeout
+  if (env->step_num > 3600)
+  {
     done = 1;
   }
 
-  env->rewards[0] = reward;
+  env->rewards[0] = r_progress + r_push + r_stationary + r_success;
   env->terminals[0] = (float)done;
 
-  env->episode_return += reward;
-  env->prev_error = cur_error;
+  env->episode_return += r_progress + r_push + r_stationary;
 
   // Logs for PufferLib
-  env->log.r_off_map = env->count_off_map;
-  env->log.r_progress += r_progress;
-  env->log.r_push += r_push;
+  env->log.r_goal_obs   += r_goal_obs;
+  env->log.r_progress   += r_progress;
+  env->log.r_push       += r_push;
   env->log.r_stationary += r_stationary;
-  env->log.perf = (init - cur_error) / (init + 1e-6f);
-  env->log.score = -cur_error;
+  env->log.perf = perf;
+  // env->log.score = -cur_error;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
   env->log.n = done ? 1.0f : 0.0f;
@@ -813,17 +801,24 @@ static inline void update_kinematics(SoilEnv* env)
         int i = track_cells[k].i;
         int j = track_cells[k].j;
         if (env->grid_L[i][j] < 0.001f) continue;
-        
+
         float track_z = dozer->position_z + track_cells[k].local_x * tan_pitch + track_cells[k].local_y * tan_roll;
         float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
 
         if (soil_z >= track_z)
         {
-          float old_c = cell_error_contrib(env, i, j);
+          float prev_error = cell_error_absolute(env, i, j);
           float compacted = env->grid_L[i][j] * compaction_rate;
           env->grid_L[i][j] -= compacted;
           env->grid_H[i][j] += compacted / env->swell_ratio;
-          env->cur_error += cell_error_contrib(env, i, j) - old_c;
+
+          float error = cell_error_absolute(env, i, j) - prev_error;
+          env->map_error_absolute += error;
+
+          if (env->map_region[i][j] == 1 || env->map_region[i][j] == 2)
+          {
+            env->map_error_goal += error;
+          }
         }
       }
     }
@@ -868,28 +863,41 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   float actual_f_resist = 0.0f;
 
   // Passive soil resistance ALWAYS opposes the direction of motion/effort.
-  if (f_push > 0.0f || (f_push == 0.0f && dozer->twist_linear_x > 0.01f)) {
-      if (f_resist > f_push) {
-          actual_f_resist = f_push;
-          f_net = 0.0f; // Stall
-          if (dozer->twist_linear_x > 0.0f) {
-              dozer->twist_linear_x = 0.0f;
-          }
-      } else {
-          actual_f_resist = f_resist;
-          f_net = f_push - f_resist;
+  if (f_push > 0.0f || (f_push == 0.0f && dozer->twist_linear_x > 0.01f))
+  {
+    if (f_resist > f_push)
+    {
+      actual_f_resist = f_push;
+      f_net = 0.0f; // Stall
+
+      if (dozer->twist_linear_x > 0.0f)
+      {
+        dozer->twist_linear_x = 0.0f;
       }
-  } else if (f_push < 0.0f || (f_push == 0.0f && dozer->twist_linear_x < -0.01f)) {
-      if (f_resist > fabsf(f_push)) {
-          actual_f_resist = fabsf(f_push);
-          f_net = 0.0f; // Stall
-          if (dozer->twist_linear_x < 0.0f) {
-              dozer->twist_linear_x = 0.0f;
-          }
-      } else {
-          actual_f_resist = f_resist;
-          f_net = f_push + f_resist; // f_push is negative, f_resist is positive, so addition reduces magnitude
+    }
+    else
+    {
+      actual_f_resist = f_resist;
+      f_net = f_push - f_resist;
+    }
+  }
+  else if (f_push < 0.0f || (f_push == 0.0f && dozer->twist_linear_x < -0.01f))
+  {
+    if (f_resist > fabsf(f_push))
+    {
+      actual_f_resist = fabsf(f_push);
+      f_net = 0.0f; // Stall
+
+      if (dozer->twist_linear_x < 0.0f)
+      {
+        dozer->twist_linear_x = 0.0f;
       }
+    }
+    else
+    {
+      actual_f_resist = f_resist;
+      f_net = f_push + f_resist; // f_push is negative, f_resist is positive, so addition reduces magnitude
+    }
   }
 
   dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
@@ -897,8 +905,9 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
 
   // Yaw dynamics: differential track torque plus the (scaled) soil reaction moment.
   float actual_yaw_moment = 0.0f;
-  if (f_resist > 0.001f) {
-      actual_yaw_moment = dozer->last_yaw_moment * (actual_f_resist / f_resist);
+  if (f_resist > 0.001f)
+  {
+    actual_yaw_moment = dozer->last_yaw_moment * (actual_f_resist / f_resist);
   }
   float torque_net = drive_torque + actual_yaw_moment;
   dozer->twist_angular_z += (torque_net / dozer->machine_inertia) * dt;
@@ -924,10 +933,10 @@ static inline void update_chassis_2d_position(SoilEnv* env, float dt)
   // 1. Update orientation quaternion by integrating local angular velocity around Z axis
   float theta = dozer->twist_angular_z * dt;
   float q_rot[4] = {cosf(theta * 0.5f), 0.0f, 0.0f, sinf(theta * 0.5f)};
-  
+
   float q_new[4];
   quat_multiply(dozer->q, q_rot, q_new);
-  
+
   // Normalize the quaternion
   float len = sqrtf(q_new[0]*q_new[0] + q_new[1]*q_new[1] + q_new[2]*q_new[2] + q_new[3]*q_new[3]);
   if (len > 1e-6f)
@@ -945,7 +954,7 @@ static inline void update_chassis_2d_position(SoilEnv* env, float dt)
 
   dozer->position_x += v_world[0] * dt;
   dozer->position_y += v_world[1] * dt;
-  
+
   // 3. Keep Euler angles in sync for logging/rendering/coordinate projection
   float rpy[3];
   quat_to_euler(dozer->q, rpy);
@@ -1014,20 +1023,27 @@ static inline void interact_with_soil(SoilEnv* env)
   // Direction of the blade's forward vector projected on the horizontal (X-Y) plane
   float x_denom = sqrtf(x_axis_world[0] * x_axis_world[0] + x_axis_world[1] * x_axis_world[1]);
   if (x_denom < 1e-6f) x_denom = 1e-6f;
-  
+
   // Soil-push direction. Follow motion when it's clear; fall back to commanded effort when
   // nearly stopped; otherwise hold the previous direction (hysteresis) so we don't flip-flop
   // while creeping through zero velocity (e.g. coasting out of a backdrag). Stored on the dozer
   // so simulate_erosion() and update_surcharge() reuse the same direction this step.
   float push_sign = dozer->last_push_sign;
-  if (dozer->twist_linear_x > 0.01f) {
-      push_sign = 1.0f;
-  } else if (dozer->twist_linear_x < -0.01f) {
-      push_sign = -1.0f;
-  } else if (dozer->effort_linear > 0.01f) {
-      push_sign = 1.0f;
-  } else if (dozer->effort_linear < -0.01f) {
-      push_sign = -1.0f;
+  if (dozer->twist_linear_x > 0.01f)
+  {
+    push_sign = 1.0f;
+  }
+  else if (dozer->twist_linear_x < -0.01f)
+  {
+    push_sign = -1.0f;
+  }
+  else if (dozer->effort_linear > 0.01f)
+  {
+    push_sign = 1.0f;
+  }
+  else if (dozer->effort_linear < -0.01f)
+  {
+    push_sign = -1.0f;
   }
   dozer->last_push_sign = push_sign;
 
@@ -1068,20 +1084,29 @@ static inline void interact_with_soil(SoilEnv* env)
 
       if (depth > 0.0f)
       {
-        float old_c = cell_error_contrib(env, x0, y0);
-        if (env->grid_L[x0][y0] > 0.0f)
+        float prev_error = cell_error_absolute(env, x0, y0);
+
+        if (env->grid_L[x0][y0] > 0.0f)  // first check loose soil
         {
           float l_cut = (depth < env->grid_L[x0][y0]) ? depth : env->grid_L[x0][y0];
           env->grid_L[x0][y0] -= l_cut;
           depth -= l_cut;
           cell_cut_vol += l_cut * CELL_SIZE * CELL_SIZE;
         }
-        if (depth > 0.0f)
+
+        if (depth > 0.0f)  // if we cut through loose and hit hard soil
         {
           env->grid_H[x0][y0] -= depth; 
           cell_cut_vol += depth * CELL_SIZE * CELL_SIZE * env->swell_ratio;
         }
-        env->cur_error += cell_error_contrib(env, x0, y0) - old_c;
+
+        float error = cell_error_absolute(env, x0, y0);
+        env->map_error_absolute +=  error - prev_error;
+
+        if (env->map_region[x0][y0] == 1 || env->map_region[x0][y0] == 2)  // if we're in a cut region
+        {
+          env->map_error_goal += error - prev_error;
+        }
       }
 
       if (num_cells < 100)
@@ -1114,8 +1139,18 @@ static inline void interact_with_soil(SoilEnv* env)
     // Bresenham step
     if (x0 == x1 && y0 == y1) break;
     int e2 = 2 * err;
-    if (e2 >= -dy_i) { err -= dy_i; x0 += sx; }
-    if (e2 <= dx_i) { err += dx_i; y0 += sy; }
+
+    if (e2 >= -dy_i)
+    {
+      err -= dy_i;
+      x0 += sx;
+    }
+
+    if (e2 <= dx_i)
+    {
+      err += dx_i;
+      y0 += sy;
+    }
   }
 
   dozer->last_force = total_force;
@@ -1139,9 +1174,17 @@ static inline void interact_with_soil(SoilEnv* env)
       int dep_y = (int)floorf(dep_global_y / CELL_SIZE);
       if ((unsigned int)dep_x < GRID_SIZE && (unsigned int)dep_y < GRID_SIZE)
       {
-        float old_c = cell_error_contrib(env, dep_x, dep_y);
+        float prev_error = cell_error_absolute(env, dep_x, dep_y);
+
         env->grid_L[dep_x][dep_y] += dh;
-        env->cur_error += cell_error_contrib(env, dep_x, dep_y) - old_c;
+
+        float error = cell_error_absolute(env, dep_x, dep_y) - prev_error;
+        env->map_error_absolute += error;
+
+        if (env->map_region[dep_x][dep_y] == 1 || env->map_region[dep_x][dep_y] == 2)
+        {
+          env->map_error_goal += error;
+        }
       }
     }
   }
@@ -1261,16 +1304,17 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
 
   float min_lx = (push_sign > 0.0f) ? -loader_length : 0.0f;
   float max_lx = (push_sign > 0.0f) ? 0.0f : loader_length;
-  
+
   float cx[4] = {min_lx, max_lx, max_lx, min_lx};
   float cy[4] = {-half_bw, -half_bw, half_bw, half_bw};
-  
+
   int frozen_min_i = max_i;
   int frozen_max_i = min_i;
   int frozen_min_j = max_j;
   int frozen_max_j = min_j;
 
-  for (int c = 0; c < 4; c++) {
+  for (int c = 0; c < 4; c++)
+  {
     float wx = dozer->blade_x + cx[c] * cos_y - cy[c] * sin_y;
     float wy = dozer->blade_y + cx[c] * sin_y + cy[c] * cos_y;
     int gi = (int)floorf(wx / CELL_SIZE);
@@ -1280,7 +1324,7 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
     if (gj < frozen_min_j) frozen_min_j = gj;
     if (gj > frozen_max_j) frozen_max_j = gj;
   }
-  
+
   frozen_min_i = clamp_idx(frozen_min_i - 1);
   frozen_max_i = clamp_idx(frozen_max_i + 1);
   frozen_min_j = clamp_idx(frozen_min_j - 1);
@@ -1334,12 +1378,13 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
         temp_L[li][lj] = L;
         temp_T[li][lj] = env->grid_H[i][j] + L;
         delta_L[li][lj] = 0.0f;
-        if (L > 1e-4f) {
-           any_loose = 1;
-           if (i < active_min_i) active_min_i = i;
-           if (i > active_max_i) active_max_i = i;
-           if (j < active_min_j) active_min_j = j;
-           if (j > active_max_j) active_max_j = j;
+        if (L > 1e-4f)
+        {
+          any_loose = 1;
+          if (i < active_min_i) active_min_i = i;
+          if (i > active_max_i) active_max_i = i;
+          if (j < active_min_j) active_min_j = j;
+          if (j > active_max_j) active_max_j = j;
         }
       }
     }
@@ -1416,10 +1461,18 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
       {
         float d = delta_L[i - base_i][j - base_j];
         if (fabsf(d) < 1e-9f) continue;
-        float old_c = cell_error_contrib(env, i, j);
+
+        float prev_error = cell_error_absolute(env, i, j);
         env->grid_L[i][j] += d;
         if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f;
-        env->cur_error += cell_error_contrib(env, i, j) - old_c;
+
+        float error = cell_error_absolute(env, i, j) - prev_error;
+        env->map_error_absolute += error;
+
+        if (env->map_region[i][j] == 1 || env->map_region[i][j] == 2)
+        {
+          env->map_error_goal += error;
+        }
       }
     }
 
@@ -1665,6 +1718,8 @@ static inline void generate_goal_map(SoilEnv* env)
 
 static inline void env_reset(SoilEnv* env)
 {
+  memset(env->observations, 0, 20011*sizeof(float));
+
   env->loose_soil_density = 1200.0f;
   env->soil_gamma = 15000.0f;
   env->soil_c = 300.0f;   // (Pa) soil cohesion
@@ -1674,10 +1729,10 @@ static inline void env_reset(SoilEnv* env)
   env->swell_ratio = 1.2f;
 
   // rewards
-  env->log.r_off_map = 0;
-  env->log.r_push = 0;
+  env->log.r_goal_obs   = 0;
+  env->log.r_push       = 0;
   env->log.r_stationary = 0;
-  env->log.r_progress = 0;
+  env->log.r_progress   = 0;
   env->forward = 1;
   env->stage_1 = 1;
   Dozer* dozer = &env->dozer;
@@ -1767,11 +1822,12 @@ static inline void env_reset(SoilEnv* env)
 
   dozer->last_push_sign = 1.0f;  // default to forward until motion/effort says otherwise
 
-  for(int i = 0; i < GRID_SIZE; i++) {
-    for(int j = 0; j < GRID_SIZE; j++) {
+  for(int i = 0; i < GRID_SIZE; i++)
+  {
+    for(int j = 0; j < GRID_SIZE; j++)
+    {
       env->grid_H[i][j] = 1.0f;
       env->grid_L[i][j] = 0.0f;
-      env->original_H[i][j] = env->grid_H[i][j] + env->grid_L[i][j];  // snapshot of starting terrain
     }
   }
 
@@ -1780,14 +1836,16 @@ static inline void env_reset(SoilEnv* env)
   precompute_soil_bearing_capacity(env);
 
   // reward bookkeeping — init from terrain error (volume error over cut/fill zone)
-  env->initial_error = compute_terrain_error(env);
-  env->cur_error = env->initial_error;
-  env->prev_error = 0.0f;
-  env->prev_progress = 0.0f;
-  env->episode_return = 0.0f;
-  env->count_off_map = 0.0f;
-  env->count_jitter = 0.0f;
-  env->count_large_neg_rewards = 0.0f;
+  env->initial_error_absolute = compute_terrain_error(env);
+  env->initial_error_goal     = env->initial_error_absolute;  // at init, the goal map is the same as the terrain, except for the goal!
+  env->map_error_absolute     = env->initial_error_absolute;
+  env->map_error_goal         = env->initial_error_absolute;
+  env->map_error_goal_prev    = env->initial_error_absolute;
+  env->map_error_directional  = env->initial_error_absolute;
+  env->map_error_directional_prev = env->initial_error_absolute;
+
+  env->episode_return         = 0.0f;
+
   memset(&env->log, 0, sizeof(Log));
   env->log.perf = 0.0f;
   env->log.n = 0.0f;
