@@ -477,7 +477,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->rewards[0] = r_progress + r_push + r_stationary + r_success;
   env->terminals[0] = (float)done;
 
-  env->episode_return += r_progress + r_push + r_stationary;
+  env->episode_return += r_progress + r_push + r_stationary + r_success;
 
   // Logs for PufferLib
   env->log.r_goal_obs   += r_goal_obs;
