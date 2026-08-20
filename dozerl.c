@@ -7,7 +7,7 @@
 void demo(const char* checkpoint_path)
 {
   SoilEnv* env = (SoilEnv*)malloc(sizeof(SoilEnv));
-  env->observations = (float*)calloc(20011, sizeof(float));
+  env->observations = (float*)calloc(5011, sizeof(float));
   env->actions = (float*)calloc(4, sizeof(float));
   env->rewards = (float*)calloc(1, sizeof(float));
   env->terminals = (float*)calloc(1, sizeof(float));

@@ -8,7 +8,7 @@
 #include <string.h>
 
 // GLOBAL PARAMS
-#define SPATIAL_OBS_SIZE 100  // grid size for the map observations
+#define SPATIAL_OBS_SIZE 50  // grid size for the map observations
 #define GRID_SIZE 150
 #define CELL_SIZE 0.2f
 #define CELL_AREA (CELL_SIZE * CELL_SIZE)
@@ -161,7 +161,6 @@ typedef struct
   float pitch_intertia;
   float roll_inertia;
   float machine_inertia;
-
 } Dozer;
 
 typedef struct
@@ -220,8 +219,9 @@ typedef struct
   float start_x;
   float start_y;
 
-  int forward;
-  int stage_1;
+  float num_obs_cells;
+  float prev_obs_cells;
+
 } SoilEnv;
 
 typedef struct
@@ -352,49 +352,69 @@ static inline void get_obs(SoilEnv* env)
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
 
-  // next we get the dozer's cell position and shift by half the obs grid size to get to the starting corner
-  float half_obs_grid = SPATIAL_OBS_SIZE * 0.5f;
-  float obs_start_x = (dozer->position_x / CELL_SIZE) - half_obs_grid * cos_y + half_obs_grid * sin_y;
-  float obs_start_y = (dozer->position_y / CELL_SIZE) - half_obs_grid * sin_y - half_obs_grid * cos_y;
+  // Observe 100x100 cells (20m x 20m at 0.2m/cell) but downscale 2x2 average -> 50x50 obs.
+  const float half_src = 50.0f;
+  float obs_start_x = (dozer->position_x / CELL_SIZE) - half_src * cos_y + half_src * sin_y;
+  float obs_start_y = (dozer->position_y / CELL_SIZE) - half_src * sin_y - half_src * cos_y;
 
+  // reset observed goal cells
+  env->num_obs_cells = 0;
   // then we iterate to get all cells in the obs space
   for (int i = 0; i < SPATIAL_OBS_SIZE; i++)
   {
-    float row_grid_x = obs_start_x + i * cos_y;
-    float row_grid_y = obs_start_y + i * sin_y;
+    float row_base_x = obs_start_x + i * 2.0f * cos_y;
+    float row_base_y = obs_start_y + i * 2.0f * sin_y;
 
     for (int j = 0; j < SPATIAL_OBS_SIZE; j++)
     {
-      int grid_i = (int)floorf(row_grid_x - j * sin_y);
-      int grid_j = (int)floorf(row_grid_y + j * cos_y);
+      float base_x = row_base_x - j * 2.0f * sin_y;
+      float base_y = row_base_y + j * 2.0f * cos_y;
 
       // here we do some index mapping from 2d grid coords -> 1d obs array shape
       int h_obs_index = (i * SPATIAL_OBS_SIZE) + j + obs_offset;
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
-      // if the selected env grid is within bounds of the sim region, grab the underlying map data
+      // 2x2 average in the vehicle-aligned frame: offsets (dx,dy) in {0,1}
+      // world = base + dx*cos - dy*sin , base_y + dx*sin + dy*cos
+      float sum_cur = 0.0f;
+      float sum_goal = 0.0f;
+      for (int dy = 0; dy < 2; dy++)
+      {
+        for (int dx = 0; dx < 2; dx++)
+        {
+          float sx = base_x + dx * cos_y - dy * sin_y;
+          float sy = base_y + dx * sin_y + dy * cos_y;
+          int grid_i = (int)floorf(sx);
+          int grid_j = (int)floorf(sy);
+          if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
+          {
+            sum_cur += env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
+            sum_goal += env->grid_G[grid_i][grid_j];
+
+            if (env->map_region[grid_i][grid_j] == 1 || env->map_region[grid_i][grid_j] == 2)
+            {
+              env->num_obs_cells += 1;
+            }
+          }
+
+          // out-of-bounds contributes 0, matching previous zero-padding (divided by 4 below)
+        }
+      }
+      float avg_cur = sum_cur * 0.25f;
+      float avg_goal = sum_goal * 0.25f;
+
       // Channel 0: current height relative to chassis (as before)
       // Channel 1: now difference current - goal (error map) instead of absolute goal height
       // Both div by 0.25m (~ within [-1,1])
-      if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
+      env->observations[h_obs_index] = (avg_cur - dozer->position_z) * 0.25f;
+      if(env->observations[h_obs_index] > 1.0f)
       {
-        float cur_h = env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
-        float goal_h = env->grid_G[grid_i][grid_j];
-        env->observations[h_obs_index] = (cur_h - dozer->position_z) * 0.25f;
-        if(env->observations[h_obs_index] > 1.0f)
-        {
-          env->observations[h_obs_index] = 1.0f;  // clip max obs to prevent soil spikes from going way oob
-        }
-        env->observations[g_obs_index] = (cur_h - goal_h) * 0.25f;
-        // track max & min observed raw heightmap cell for PufferLib logging
-        if (env->observations[h_obs_index] > env->log.max_height) env->log.max_height = env->observations[h_obs_index];
-        if (env->observations[h_obs_index] < env->log.min_height) env->log.min_height = env->observations[h_obs_index];
+        env->observations[h_obs_index] = 1.0f;  // clip max obs to prevent soil spikes from going way oob
       }
-      else  // if it's outside the sim region, just fill with 0s
-      {
-        env->observations[h_obs_index] = 0.0f;
-        env->observations[g_obs_index] = 0.0f;
-      }
+      env->observations[g_obs_index] = (avg_cur - avg_goal) * 0.25f;
+      // track max & min observed raw heightmap cell for PufferLib logging
+      if (env->observations[h_obs_index] > env->log.max_height) env->log.max_height = env->observations[h_obs_index];
+      if (env->observations[h_obs_index] < env->log.min_height) env->log.min_height = env->observations[h_obs_index];
     }
   }
 }
@@ -441,6 +461,16 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 
   // goal observability reward
   float r_goal_obs = 0.0f;
+  if (env->prev_obs_cells == -1.0f)
+  {
+    r_goal_obs = 0.0f;
+  }
+  else
+  {
+    float delta_cells = env->num_obs_cells - env->prev_obs_cells;
+    r_goal_obs = delta_cells * 0.01;
+  }
+  env->prev_obs_cells = env->num_obs_cells;
 
   // pushing reward - if we are moving forward and pushing soil (maybe make dir independent)
   float r_push = 0.0f;
@@ -474,10 +504,10 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     done = 1;
   }
 
-  env->rewards[0] = r_progress + r_push + r_stationary + r_success;
+  env->rewards[0] = r_progress + r_push + r_stationary + r_success + r_goal_obs;
   env->terminals[0] = (float)done;
 
-  env->episode_return += r_progress + r_push + r_stationary + r_success;
+  env->episode_return += r_progress + r_push + r_stationary + r_success + r_goal_obs;
 
   // Logs for PufferLib
   env->log.r_goal_obs   += r_goal_obs;
@@ -1718,7 +1748,7 @@ static inline void generate_goal_map(SoilEnv* env)
 
 static inline void env_reset(SoilEnv* env)
 {
-  memset(env->observations, 0, 20011*sizeof(float));
+  memset(env->observations, 0, 5011*sizeof(float));
 
   env->loose_soil_density = 1200.0f;
   env->soil_gamma = 15000.0f;
@@ -1728,13 +1758,6 @@ static inline void env_reset(SoilEnv* env)
   env->soil_delta = 10.0f * M_PI / 180.0f;
   env->swell_ratio = 1.2f;
 
-  // rewards
-  env->log.r_goal_obs   = 0;
-  env->log.r_push       = 0;
-  env->log.r_stationary = 0;
-  env->log.r_progress   = 0;
-  env->forward = 1;
-  env->stage_1 = 1;
   Dozer* dozer = &env->dozer;
 
   // dimensions | m
@@ -1844,11 +1867,19 @@ static inline void env_reset(SoilEnv* env)
   env->map_error_directional  = env->initial_error_absolute;
   env->map_error_directional_prev = env->initial_error_absolute;
 
-  env->episode_return         = 0.0f;
+  env->num_obs_cells  = 0.0f;
+  env->prev_obs_cells  = -1.0f;
+  env->episode_return = 0.0f;
 
   memset(&env->log, 0, sizeof(Log));
   env->log.perf = 0.0f;
   env->log.n = 0.0f;
+
+  // rewards
+  env->log.r_goal_obs   = 0.0f;
+  env->log.r_push       = 0.0f;
+  env->log.r_stationary = 0.0f;
+  env->log.r_progress   = 0.0f;
 
   env->log.max_vel_arm          = -1e9f;
   env->log.max_vel_blade_pitch  = -1e9f;
