@@ -7,7 +7,7 @@
 void demo(const char* checkpoint_path)
 {
   SoilEnv* env = (SoilEnv*)malloc(sizeof(SoilEnv));
-  env->observations = (float*)calloc(5011, sizeof(float));
+  env->observations = (float*)calloc(20011, sizeof(float));
   env->actions = (float*)calloc(4, sizeof(float));
   env->rewards = (float*)calloc(1, sizeof(float));
   env->terminals = (float*)calloc(1, sizeof(float));
@@ -24,8 +24,8 @@ void demo(const char* checkpoint_path)
 
     int num_agents = 1;
     int input_dim = 5011;
-    int hidden_dim = 512;
-    int num_layers = 2;
+    int hidden_dim = 1024;
+    int num_layers = 3;
     int logit_sizes[4] = {1, 1, 1, 1};
     int num_actions = 4;
 
