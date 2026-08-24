@@ -7,12 +7,15 @@
 
 static Camera3D camera = { 0 };
 static bool show_goal = false;  // toggled with 'G': translucent goal-map overlay
+static bool show_obs = false;  // toggled with 'O': translucent goal-map overlay
 static int camera_view = 0; // 0: x-y top, 1: y-z side, 2: x-z front — cycled with 'C'
+Font ibm_mono;
 
 static inline void init_render()
 {
-  InitWindow(1280, 720, "DozeRL Simulator");
-  SetTargetFPS(60);
+  InitWindow(1920, 1080, "DozeRL Simulator");
+  ibm_mono = LoadFontEx("/workspaces/puffertank/pufferlib/resources/fonts/IBM_Plex_Mono/IBMPlexMono-Medium.ttf", 64, 0, 250);
+  SetTargetFPS(50);
 
   camera.position = (Vector3){ 15.0f, 15.0f, 15.0f };
   camera.target = (Vector3){ 5.0f, 0.0f, 5.0f };
@@ -166,31 +169,27 @@ static inline void draw_rectangular_prism(Vector3 position, Vector3 rotation, Ve
   rlPopMatrix();
 }
 
+static inline void draw_obs(SoilEnv* env)
+{
+  Dozer* dozer = &env->dozer;
+  Color obs = (Color){120, 80, 255, 50};  //see thru
+
+  // obs viz
+  Vector3 obs_pos = {dozer->position_x, dozer->position_y, 2.0f};
+  Vector3 obs_rot = {0.0f, 0.0f, dozer->angular_z};
+  Vector3 obs_siz = {20.0f, 20.0f, 0.1f};
+  draw_rectangular_prism(obs_pos, obs_rot, obs_siz, obs);
+}
+
 static inline void draw_dozer(SoilEnv* env)
 {
   Dozer* dozer = &env->dozer;
 
-  Color chassis_color = (Color){210, 180, 140, 055};      // Desert Tan
-  Color arm_color = (Color){180, 150, 110, 255};          // Darker Desert Tan
-  Color track_color = (Color){60, 60, 60, 255};           // Dark Grey
-  Color blade_color = (Color){80, 80, 80, 255};           // Dark Grey
   Color yellow = (Color){255, 255, 0, 255};  //yellow
-
-  Vector3 pitch_joint = {0.0f, 0.0f, 0.0f};
-  Vector3 u_joint     = {0.0f, 0.0f, 0.0f};
-  Vector3 blade_edge  = {0.0f, 0.0f, 0.0f};
-
-  float track_height   = 0.41f;  // m
-  float chassis_length = 2.54f;  // m
-  float chassis_width  = 1.00f;  // m
-  float chassis_height = 1.87f;  // m
-  float gauge_offset = dozer->track_gauge * 0.5f;
-  float track_offset = dozer->track_width * 0.5f;
 
   Vector3 joint_size = {0.5f, 0.5f, 0.5f};
 
   // Chassis
-  Vector3 chassis_size = {chassis_length, chassis_width, chassis_height};
   Vector3 chassis_pos = {dozer->position_x, dozer->position_y, dozer->position_z};
   Vector3 chassis_rot = {dozer->angular_x, -dozer->angular_y, dozer->angular_z};
   draw_rectangular_prism(chassis_pos, chassis_rot, joint_size, yellow);
@@ -221,7 +220,6 @@ static inline void draw_dozer(SoilEnv* env)
   // Vector3 blade_edge_pos = {dozer->_blade_edge_pose[0], dozer->_blade_edge_pose[1], dozer->_blade_edge_pose[2]};
   // Vector3 blade_edge_rot = {dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5]};
   // draw_rectangular_prism(blade_edge_pos, blade_edge_rot, joint_size, yellow);
-
 }
 
 static inline void render_step(SoilEnv* env)
@@ -229,6 +227,7 @@ static inline void render_step(SoilEnv* env)
   Dozer* dozer = &env->dozer;
 
   if (IsKeyPressed(KEY_G)) show_goal = !show_goal;
+  if (IsKeyPressed(KEY_O)) show_obs = !show_obs;
   if (IsKeyPressed(KEY_C)) camera_view = (camera_view + 1) % 3;
 
   // 3 views, all centered on middle of grid world (30x30m, center 15,15)
@@ -253,21 +252,42 @@ static inline void render_step(SoilEnv* env)
   draw_heightmap_fast(env);
   draw_dozer(env);
   if (show_goal) draw_goal_map(env);
+  if (show_obs) draw_obs(env);
   EndMode3D();
 
   DrawFPS(10, 10);
-  DrawText("R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal | C: View", 10, 40, 20, DARKGRAY);
-  DrawText(TextFormat("Terrain Error: %.2f / %.2f  Perf: %.1f%%  Return: %.1f", env->cur_error, env->initial_error, env->log.perf*100.0f, env->episode_return), 10, 70, 20, MAROON);
-  DrawText(TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), 10, 250, 20, show_goal ? GREEN : GRAY);
-  DrawText(TextFormat("View (C): %s", camera_view==0 ? "X-Y TOP" : camera_view==1 ? "Y-Z SIDE" : "X-Z FRONT"), 10, 270, 20, DARKGRAY);
 
-  DrawText(TextFormat("Lin Vel: %.2f m/s | Yaw Vel: %.2f rad/s", dozer->twist_linear_x, dozer->twist_angular_z), 10, 100, 20, BLACK);
-  DrawText(TextFormat("Arm Pos: %.2f | Vel: %.2f", dozer->pos_virtual_lift_arm, dozer->vel_virtual_lift_arm), 10, 130, 20, BLACK);
-  DrawText(TextFormat("Pitch Pos: %.2f | Vel: %.2f", dozer->pos_blade_pitch, dozer->vel_blade_pitch), 10, 150, 20, BLACK);
-  DrawText(TextFormat("Roll Pos: %.2f | Vel: %.2f", dozer->pos_blade_roll, dozer->vel_blade_roll), 10, 170, 20, BLACK);
+  const float font_size = 20.0f;
+  const float font_spacing = 1.0f;
 
-  DrawText(TextFormat("Effort Lin: %.2f | Rot: %.2f", dozer->effort_linear, dozer->effort_rotational), 10, 200, 20, BLUE);
-  DrawText(TextFormat("Effort Lift: %.2f | Pitch: %.2f | Roll: %.2f", dozer->effort_lift, dozer->effort_pitch, dozer->effort_roll), 10, 220, 20, BLUE);
+  DrawTextEx(ibm_mono, "R: Reset | WASD/Arrows: Move | I/K/J/L: Blade | QE: Roll | G: Goal | C: View", (Vector2){ 10.0f, 20.0f }, font_size, font_spacing, DARKGRAY);
+  DrawTextEx(ibm_mono, TextFormat("Global Error : %.2f / %.2f", env->map_error_absolute, env->initial_error_absolute), (Vector2){ 10.0f, 60.0f }, font_size, font_spacing, MAROON);
+  DrawTextEx(ibm_mono, TextFormat("Goal   Error : %.2f / %.2f", env->map_error_goal, env->initial_error_absolute), (Vector2){ 10.0f, 80.0f }, font_size, font_spacing, MAROON);
+  DrawTextEx(ibm_mono, TextFormat("Perf         : %.1f%%", env->log.perf*100.0f), (Vector2){ 10.0f, 100.0f }, font_size, font_spacing, MAROON);
+  DrawTextEx(ibm_mono, TextFormat("Return       : %.1f", env->episode_return), (Vector2){ 10.0f, 120.0f }, font_size, font_spacing, MAROON);
+
+  DrawTextEx(ibm_mono, TextFormat("Pos Arm   : %.2f | Vel : %.2f", dozer->pos_virtual_lift_arm, dozer->vel_virtual_lift_arm), (Vector2){ 10.0f, 160.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("Pos Pitch : %.2f | Vel : %.2f", dozer->pos_blade_pitch, dozer->vel_blade_pitch), (Vector2){ 10.0f, 180.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("Pos Roll  : %.2f | Vel : %.2f", dozer->pos_blade_roll, dozer->vel_blade_roll), (Vector2){ 10.0f, 200.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("X: %.2f | Y: %.2f", dozer->position_x, dozer->position_y), (Vector2){ 10.0f, 220.0f }, font_size, font_spacing, BLACK);
+
+  DrawTextEx(ibm_mono, TextFormat("Effort Lin   : %.2f", dozer->effort_linear), (Vector2){ 10.0f, 260.0f }, font_size, font_spacing, BLUE);
+  DrawTextEx(ibm_mono, TextFormat("Effort Rot   : %.2f", dozer->effort_rotational), (Vector2){ 10.0f, 280.0f }, font_size, font_spacing, BLUE);
+  DrawTextEx(ibm_mono, TextFormat("Effort Lift  : %.2f", dozer->effort_lift), (Vector2){ 10.0f, 300.0f }, font_size, font_spacing, BLUE);
+  DrawTextEx(ibm_mono, TextFormat("Effort Pitch : %.2f", dozer->effort_pitch), (Vector2){ 10.0f, 320.0f }, font_size, font_spacing, BLUE);
+  DrawTextEx(ibm_mono, TextFormat("Effort Roll  : %.2f", dozer->effort_roll), (Vector2){ 10.0f, 340.0f }, font_size, font_spacing, BLUE);
+
+  DrawTextEx(ibm_mono, TextFormat("Surcharge_q : %.2f", dozer->blade_surcharge_Q), (Vector2){ 10.0f, 380.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("Tracks Lin  : %.2f m/s", dozer->vel_tracks_linear), (Vector2){ 10.0f, 400.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("Tracks Rot  : %.2f rad/s", dozer->vel_tracks_rotational), (Vector2){ 10.0f, 420.0f }, font_size, font_spacing, BLACK);
+
+  DrawTextEx(ibm_mono, TextFormat("r_progress   : %.2f", env->log.r_progress), (Vector2){ 10.0f, 460.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("r_goal_obs   : %.2f", env->log.r_goal_obs), (Vector2){ 10.0f, 480.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("r_push       : %.2f", env->log.r_push), (Vector2){ 10.0f, 500.0f }, font_size, font_spacing, BLACK);
+  DrawTextEx(ibm_mono, TextFormat("r_stationary : %.2f", env->log.r_stationary), (Vector2){ 10.0f, 520.0f }, font_size, font_spacing, BLACK);
+
+  DrawTextEx(ibm_mono, TextFormat("Goal overlay (G): %s", show_goal ? "ON" : "OFF"), (Vector2){ 10.0f, 1000.0f }, font_size, font_spacing, show_goal ? GREEN : GRAY);
+  DrawTextEx(ibm_mono, TextFormat("View (C): %s", camera_view==0 ? "X-Y TOP" : camera_view==1 ? "Y-Z SIDE" : "X-Z FRONT"), (Vector2){ 10.0f, 1020.0f }, font_size, font_spacing, DARKGRAY);
 
   EndDrawing();
 }

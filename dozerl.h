@@ -11,6 +11,7 @@
 #define SPATIAL_OBS_SIZE 50  // grid size for the map observations
 #define GRID_SIZE 150
 #define CELL_SIZE 0.2f
+#define CELL_AREA (CELL_SIZE * CELL_SIZE)
 #define EROSION_MARGIN 20  // cells buffered around the blade for slumping (~4.0m at CELL_SIZE=0.2f); keep in sync with CELL_SIZE
 #define EROSION_WIN (2 * EROSION_MARGIN + 1)  // side length of the local erosion scratch window
 #define GRAVITY 9.81f
@@ -24,24 +25,30 @@ typedef struct {
     float episode_return; // Recommended metric: sum of agent rewards over episode
     float episode_length; // Recommended metric: number of steps of agent episode
 
-    float count_large_neg_rewards; // Custom metric: average large negative rewards per episode
-    float count_off_map;  // Custom metric: average off-map steps per episode
-    float count_jitter;   // Custom metric: average high-jitter steps per episode
     // max values
     float max_vel_arm;  // Custom metric: max arm angular velocity per episode
     float max_vel_blade_pitch;  // Custom metric: max blade pitch angular velocity per episode
     float max_vel_blade_roll;  // Custom metric: max blade roll velocity per episode
     float max_vel_linear;  // Custom metric: max linear vehicle velocity per episode
+    float max_vel_rotational;  // Custom metric: max rotational vehicle velocity per episode
+    float max_vel_blade_yaw;
+
     // min values
     float min_vel_arm;  // Custom metric: min arm angular velocity per episode
     float min_vel_blade_pitch;  // Custom metric: min blade pitch angular velocity per episode
     float min_vel_blade_roll;  // Custom metric: min blade roll velocity per episode
     float min_vel_linear;  // Custom metric: min linear vehicle velocity per episode
-
+    float min_vel_rotational;  // Custom metric: min rotational vehicle velocity per episode
+    float min_vel_blade_yaw;
     // reward signals per ep
-    float r_shaping;
-    float r_off_map;
-    float r_time;
+    // float total_reward;
+    float r_progress;
+    float r_goal_obs;
+    float r_push;
+    float r_stationary;
+
+    float max_height; // max observed heightmap cell (grid_H+grid_L) per episode
+    float min_height; // min observed heightmap cell per episode
 
     float n; // Required as the last field
 } Log;
@@ -154,23 +161,21 @@ typedef struct
   float pitch_intertia;
   float roll_inertia;
   float machine_inertia;
-
 } Dozer;
 
 typedef struct
 {
-  Log log; // Required field. Env binding code uses this to aggregate logs
-  float* observations; // Required
-  float* actions; // Required
-  float* rewards; // Required
-  float* terminals; // Required
+  Log log;              // Required field. Env binding code uses this to aggregate logs
+  float* observations;  // Required
+  float* actions;       // Required
+  float* rewards;       // Required
+  float* terminals;     // Required
   int num_agents;
 
   // maps
   float grid_H[GRID_SIZE][GRID_SIZE];     // (m) Hard Soil
   float grid_L[GRID_SIZE][GRID_SIZE];     // (m) Loose Soil
   float grid_G[GRID_SIZE][GRID_SIZE];     // (m) Goal Map
-  float original_H[GRID_SIZE][GRID_SIZE]; // (m) Original Terrain Map (to prevent moving soil penalty)
   char map_region[GRID_SIZE][GRID_SIZE];  // ( ) 0=Neutral, 1=Cut, 2=Fill
 
   // height params (may change episode-to-episode)
@@ -178,18 +183,17 @@ typedef struct
   float dH_max;     // expected maximum displacement per cell
 
   // soil params (may change episode-to-episode)
-  float swell_ratio;         // ( )       Volumetric change when going from compact to loose soil
-  float loose_soil_density;  // (kg/m^3 ) Density
-  float soil_c;  // soil cohesion
-  float soil_c_a;  // adhesion
-  float soil_phi;  // soil internal friction angle
+  float swell_ratio;          // ( )       Volumetric change when going from compact to loose soil
+  float loose_soil_density;   // (kg/m^3 ) Density
+  float soil_c;               // soil cohesion
+  float soil_c_a;             // adhesion
+  float soil_phi;             // soil internal friction angle
   float soil_delta;
-  float soil_gamma;  // moist? unit weight of soil
-  float soil_q_u; // soil ultimate bearing capacity | NOTE: Since we're dealing with 'homogenous' soil properties, we can effectively just calculate this once!
+  float soil_gamma;           // moist? unit weight of soil
+  float soil_q_u;             // soil ultimate bearing capacity | NOTE: Since we're dealing with 'homogenous' soil properties, we can effectively just calculate this once!
 
   Dozer dozer;
   int step_num;
-  int tick;
   unsigned int rng;
 
   // Thread-safe precomputed FEE factors
@@ -199,18 +203,25 @@ typedef struct
   float N_ca;
 
   // Log metrics
-  float initial_error;
-  float cur_error; // incremental volume error over cut/fill zone
-  float prev_progress;
+  float initial_error_absolute;
+  float initial_error_goal;
+
+  float map_error_absolute;     // raw error across entire map wrt goal map [fabs(state - goal) * CELL_SIZE * CELL_SIZE]
+  float map_error_goal;         // error in the cut and pile regions
+  float map_error_goal_prev;    // error in the cut and pile regions
+  float map_error_directional;  // error in the cut and pile regions, with certain criteria in mind
+  float map_error_directional_prev;  // error in the cut and pile regions, with certain criteria in mind
   float episode_return;
-  float count_off_map;
-  float count_jitter;
-  float count_large_neg_rewards;
-  float r1;
-  float r2;
-  float r3;
-  float r4;
-  float r5;
+
+  float goal_pile_x;
+  float goal_pile_y;
+
+  float start_x;
+  float start_y;
+
+  float num_obs_cells;
+  float prev_obs_cells;
+
 } SoilEnv;
 
 typedef struct
@@ -297,16 +308,36 @@ static inline void get_obs(SoilEnv* env)
   Dozer * dozer = &env->dozer;
 
   // get observations. First [0-10] are proprioceptive (10 + noisy surcharge), rest are map (2x50x50)
-  env->observations[0]  = dozer->pos_virtual_lift_arm;
-  env->observations[1]  = dozer->pos_blade_pitch;
-  env->observations[2]  = dozer->pos_blade_roll;
-  env->observations[3]  = dozer->pos_blade_yaw;  // we still observe this, even without direct control
-  env->observations[4]  = dozer->vel_tracks_rotational;
-  env->observations[5]  = dozer->vel_tracks_linear;
-  env->observations[6]  = dozer->vel_virtual_lift_arm;
-  env->observations[7]  = dozer->vel_blade_pitch;
-  env->observations[8]  = dozer->vel_blade_roll;
-  env->observations[9]  = dozer->vel_blade_yaw;  // this one, however, may not be necessary..?
+  // Normalized to ~[-1,1] for stable value/policy learning (PufferLib has no auto obs norm)
+  env->observations[0]  = dozer->pos_virtual_lift_arm * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[1]  = dozer->pos_blade_pitch * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[2]  = dozer->pos_blade_roll * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[3]  = dozer->pos_blade_yaw * 2.0f;  // [-0.5, 0.5] -> [-1.0, 1.0]
+  env->observations[4]  = dozer->vel_tracks_rotational * 0.5f;
+  env->observations[5]  = dozer->vel_tracks_linear * 0.25f;
+  env->observations[6]  = dozer->vel_virtual_lift_arm * 0.5f;
+  env->observations[7]  = dozer->vel_blade_pitch * 0.1f;
+  env->observations[8]  = dozer->vel_blade_roll * 0.5f;
+  env->observations[9]  = dozer->vel_blade_yaw * 0.5f;
+
+  if (env->observations[4] > env->log.max_vel_rotational) env->log.max_vel_rotational = env->observations[4];
+  if (env->observations[4] < env->log.min_vel_rotational) env->log.min_vel_rotational = env->observations[4];
+
+  if (env->observations[5] > env->log.max_vel_linear) env->log.max_vel_linear = env->observations[5];
+  if (env->observations[5] < env->log.min_vel_linear) env->log.min_vel_linear = env->observations[5];
+
+  if (env->observations[6] > env->log.max_vel_arm) env->log.max_vel_arm = env->observations[6];
+  if (env->observations[6] < env->log.min_vel_arm) env->log.min_vel_arm = env->observations[6];
+
+  if (env->observations[7] > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = env->observations[7];
+  if (env->observations[7] < env->log.min_vel_blade_pitch) env->log.min_vel_blade_pitch = env->observations[7];
+
+  if (env->observations[8] > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = env->observations[8];
+  if (env->observations[8] < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = env->observations[8];
+
+  if (env->observations[9] > env->log.max_vel_blade_yaw) env->log.max_vel_blade_yaw = env->observations[9];
+  if (env->observations[9] < env->log.min_vel_blade_yaw) env->log.min_vel_blade_yaw = env->observations[9];
+
   // Noisy surcharge: real platform would estimate from cylinder pressure,
   // so model as ±20% multiplicative + ±500N additive, normalized to ~1.0 ≈ 15kN loaded
   {
@@ -321,121 +352,184 @@ static inline void get_obs(SoilEnv* env)
   float cos_y = cosf(dozer->angular_z);
   float sin_y = sinf(dozer->angular_z);
 
-  // next we get the dozer's cell position and shift by half the obs grid size to get to the starting corner
-  float half_obs_grid = SPATIAL_OBS_SIZE * 0.5f;
-  float obs_start_x = (dozer->position_x / CELL_SIZE) - half_obs_grid * cos_y + half_obs_grid * sin_y;
-  float obs_start_y = (dozer->position_y / CELL_SIZE) - half_obs_grid * sin_y - half_obs_grid * cos_y;
+  // Observe 100x100 cells (20m x 20m at 0.2m/cell) but downscale 2x2 average -> 50x50 obs.
+  const float half_src = 50.0f;
+  float obs_start_x = (dozer->position_x / CELL_SIZE) - half_src * cos_y + half_src * sin_y;
+  float obs_start_y = (dozer->position_y / CELL_SIZE) - half_src * sin_y - half_src * cos_y;
 
+  // reset observed goal cells
+  env->num_obs_cells = 0;
   // then we iterate to get all cells in the obs space
   for (int i = 0; i < SPATIAL_OBS_SIZE; i++)
   {
-    float row_grid_x = obs_start_x + i * cos_y;
-    float row_grid_y = obs_start_y + i * sin_y;
+    float row_base_x = obs_start_x + i * 2.0f * cos_y;
+    float row_base_y = obs_start_y + i * 2.0f * sin_y;
 
     for (int j = 0; j < SPATIAL_OBS_SIZE; j++)
     {
-      int grid_i = (int)floorf(row_grid_x - j * sin_y);
-      int grid_j = (int)floorf(row_grid_y + j * cos_y);
+      float base_x = row_base_x - j * 2.0f * sin_y;
+      float base_y = row_base_y + j * 2.0f * cos_y;
 
       // here we do some index mapping from 2d grid coords -> 1d obs array shape
       int h_obs_index = (i * SPATIAL_OBS_SIZE) + j + obs_offset;
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
-      // if the selected env grid is within bounds of the sim region, grab the underlying map data
-      if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
+      // 2x2 average in the vehicle-aligned frame: offsets (dx,dy) in {0,1}
+      // world = base + dx*cos - dy*sin , base_y + dx*sin + dy*cos
+      float sum_cur = 0.0f;
+      float sum_goal = 0.0f;
+      int goal = 0;
+
+      for (int dy = 0; dy < 2; dy++)
       {
-        env->observations[h_obs_index] = (env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j]) - dozer->position_z;
-        env->observations[g_obs_index] = env->grid_G[grid_i][grid_j] - dozer->position_z;
+        for (int dx = 0; dx < 2; dx++)
+        {
+          float sx = base_x + dx * cos_y - dy * sin_y;
+          float sy = base_y + dx * sin_y + dy * cos_y;
+          int grid_i = (int)floorf(sx);
+          int grid_j = (int)floorf(sy);
+          if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
+          {
+            sum_cur += env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
+            sum_goal += env->grid_G[grid_i][grid_j];
+
+            if (env->map_region[grid_i][grid_j] == 1 || env->map_region[grid_i][grid_j] == 2)
+            {
+              env->num_obs_cells += 1;
+              goal = 1;
+            }
+          }
+
+          // out-of-bounds contributes 0, matching previous zero-padding (divided by 4 below)
+        }
       }
-      else  // if it's outside the sim region, just fill with 0s
+      float avg_cur = sum_cur * 0.25f;
+      float avg_goal = sum_goal * 0.25f;
+
+      // Channel 0: current height relative to chassis (as before)
+      // Channel 1: now difference current - goal (error map) instead of absolute goal height
+      // Both div by 0.25m (~ within [-1,1])
+      env->observations[h_obs_index] = (avg_cur - dozer->position_z) * 0.25f;
+      if(env->observations[h_obs_index] > 1.0f)
       {
-        env->observations[h_obs_index] = 0.0f;
+        env->observations[h_obs_index] = 1.0f;  // clip max obs to prevent soil spikes from going way oob
+      }
+      if(goal == 1)
+      {
+        env->observations[g_obs_index] = (avg_cur - avg_goal) * 0.25f;
+      }
+      else
+      {
         env->observations[g_obs_index] = 0.0f;
       }
+      // track max & min observed raw heightmap cell for PufferLib logging
+      if (env->observations[h_obs_index] > env->log.max_height) env->log.max_height = env->observations[h_obs_index];
+      if (env->observations[h_obs_index] < env->log.min_height) env->log.min_height = env->observations[h_obs_index];
     }
   }
+}
+
+static inline float cell_error_absolute(SoilEnv* env, int i, int j)
+{
+  float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
+  float goal = env->grid_G[i][j];
+  float diff = fabs(cur_h - goal);  // absolute diff
+  return diff * CELL_AREA;
+}
+
+static inline float cell_error_directional(SoilEnv* env, int i, int j)
+{
+  float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
+  float goal = env->grid_G[i][j];
+  float diff = fabs(cur_h - goal);  // absolute diff
+  return diff * CELL_AREA;
 }
 
 static inline float compute_terrain_error(SoilEnv* env)
 {
   float err = 0.0f;
-  float cell_area = CELL_SIZE * CELL_SIZE;
-  for (int i = 0; i < GRID_SIZE; i++) {
-    for (int j = 0; j < GRID_SIZE; j++) {
-      if (env->map_region[i][j] == 0) continue;
-      float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
-      err += fabsf(env->grid_G[i][j] - cur_h) * cell_area;
+  for (int i = 0; i < GRID_SIZE; i++)
+  {
+    for (int j = 0; j < GRID_SIZE; j++)
+    {
+      err += cell_error_absolute(env, i, j);
     }
   }
   return err;
 }
 
-static inline float cell_error_contrib(SoilEnv* env, int i, int j)
-{
-  if (env->map_region[i][j] == 0) return 0.0f;
-  return fabsf(env->grid_G[i][j] - (env->grid_H[i][j] + env->grid_L[i][j])) * CELL_SIZE * CELL_SIZE;
-}
-
 static inline void update_reward_and_terminal(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
-  float cur_error = env->cur_error;
-  float init = env->initial_error;
-  float progress = (init - cur_error) / init;
-  if (progress < 0.0f) progress = 0.0f;
-  if (progress > 1.0f) progress = 1.0f;
-  // dense shaping: delta progress scaled
-  float r_shaping = (cur_error - init) * 10.0f;
 
-  // penalties
-  float r_time = -0.001f;
-  float r_off_map = 0.0f;
+  // progress reward
+  // how we sturcture this also depends on if we want to reward for % completed of task, or amount of error corrected
+  // ('per-task' vs 'per-action')
+  float r_progress = (env->map_error_goal_prev - env->map_error_goal) * 50.0f;
+  if(r_progress < 0.0f) r_progress = 0.0f;
 
-  // off-map tracking (for logs)
-  if (dozer->position_x < 0.0f || dozer->position_x > GRID_SIZE * CELL_SIZE ||
-      dozer->position_y < 0.0f || dozer->position_y > GRID_SIZE * CELL_SIZE) {
-    env->count_off_map += 1.0f;
-    r_off_map += -0.5;
+  env->map_error_goal_prev = env->map_error_goal;
+  // delta = delta / (CELL_AREA * CELL_SIZE);  // this could be simplified by just normalizing by # of cells...
+
+  // goal observability reward
+  float r_goal_obs = 0.0f;
+  if (env->prev_obs_cells == -1.0f)
+  {
+    r_goal_obs = 0.0f;
+  }
+  else
+  {
+    float delta_cells = env->num_obs_cells - env->prev_obs_cells;
+    r_goal_obs = delta_cells * 0.03;
+  }
+  env->prev_obs_cells = env->num_obs_cells;
+
+  float r_push = dozer->twist_linear_x * 0.02;
+  if (dozer->twist_linear_x > 0.1)
+  {
+    r_push += dozer->blade_surcharge_Q * 0.000003f;
   }
 
-  float reward = r_shaping + r_time + r_off_map;
+  // stationary penalty
+  float r_stationary = 0.0f;
+  if (fabs(dozer->twist_linear_x) < 0.1f)
+  {
+    r_stationary = -0.01f - (0.1f - fabs(dozer->twist_linear_x));
+  }
 
-  // success bonus + terminal
+  // jitter penalty, maybe
+
+  // Success check
+  float perf = 1.0f - (env->map_error_goal / env->initial_error_goal);
+  float r_success = 0.0f;
   int done = 0;
-  if (cur_error < 0.02f * init) {
-    reward += 5.0f;
+  if (perf > 0.5f)
+  {
+    r_success = 5.0f;
     done = 1;
   }
 
-  // time limit (1 min at 60Hz control = 3600 steps)
-  if (env->step_num >= 3600) done = 1;
-  if (env->count_off_map > 100.0f) done = 1; // persistent off-map
+  // Timeout
+  if (env->step_num > 3600)
+  {
+    done = 1;
+  }
 
-  env->rewards[0] = reward;
-  env->terminals[0] = done ? 1.0f : 0.0f;
+  env->rewards[0] = (r_progress + r_push + r_success + r_goal_obs);
+  env->episode_return += r_progress + r_push + r_success + r_goal_obs;
 
-  // velocity extremes for debugging — track true max/min per episode
-  if (dozer->vel_virtual_lift_arm > env->log.max_vel_arm) env->log.max_vel_arm = dozer->vel_virtual_lift_arm;
-  if (dozer->vel_virtual_lift_arm < env->log.min_vel_arm) env->log.min_vel_arm = dozer->vel_virtual_lift_arm;
-  if (dozer->vel_blade_pitch > env->log.max_vel_blade_pitch) env->log.max_vel_blade_pitch = dozer->vel_blade_pitch;
-  if (dozer->vel_blade_pitch < env->log.min_vel_blade_pitch) env->log.min_vel_blade_pitch = dozer->vel_blade_pitch;
-  if (dozer->vel_blade_roll > env->log.max_vel_blade_roll) env->log.max_vel_blade_roll = dozer->vel_blade_roll;
-  if (dozer->vel_blade_roll < env->log.min_vel_blade_roll) env->log.min_vel_blade_roll = dozer->vel_blade_roll;
-  if (dozer->twist_linear_x > env->log.max_vel_linear) env->log.max_vel_linear = dozer->twist_linear_x;
-  if (dozer->twist_linear_x < env->log.min_vel_linear) env->log.min_vel_linear = dozer->twist_linear_x;
+  env->terminals[0] = (float)done;
 
-  // logs for pufferlib — only counted when n=1 (episode done)
-  env->log.r_shaping += r_shaping;
-  env->log.r_time += r_time;
-  env->log.r_off_map += r_off_map;
-  env->episode_return += reward;
-  env->log.perf = progress;
-  env->log.score = -cur_error; // lower error = higher score
+
+  // Logs for PufferLib
+  env->log.r_goal_obs   += r_goal_obs;
+  env->log.r_progress   += r_progress;
+  env->log.r_push       += r_push;
+  env->log.r_stationary += r_stationary;
+  env->log.perf = perf;
+  env->log.score = env->initial_error_goal - env->map_error_goal;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
-  env->log.count_large_neg_rewards = env->count_large_neg_rewards;
-  env->log.count_off_map = env->count_off_map;
-  env->log.count_jitter = env->count_jitter;
   env->log.n = done ? 1.0f : 0.0f;
 }
 
@@ -749,17 +843,24 @@ static inline void update_kinematics(SoilEnv* env)
         int i = track_cells[k].i;
         int j = track_cells[k].j;
         if (env->grid_L[i][j] < 0.001f) continue;
-        
+
         float track_z = dozer->position_z + track_cells[k].local_x * tan_pitch + track_cells[k].local_y * tan_roll;
         float soil_z = env->grid_H[i][j] + env->grid_L[i][j];
 
         if (soil_z >= track_z)
         {
-          float old_c = cell_error_contrib(env, i, j);
+          float prev_error = cell_error_absolute(env, i, j);
           float compacted = env->grid_L[i][j] * compaction_rate;
           env->grid_L[i][j] -= compacted;
           env->grid_H[i][j] += compacted / env->swell_ratio;
-          env->cur_error += cell_error_contrib(env, i, j) - old_c;
+
+          float error = cell_error_absolute(env, i, j) - prev_error;
+          env->map_error_absolute += error;
+
+          if (env->map_region[i][j] == 1 || env->map_region[i][j] == 2)
+          {
+            env->map_error_goal += error;
+          }
         }
       }
     }
@@ -804,28 +905,41 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
   float actual_f_resist = 0.0f;
 
   // Passive soil resistance ALWAYS opposes the direction of motion/effort.
-  if (f_push > 0.0f || (f_push == 0.0f && dozer->twist_linear_x > 0.01f)) {
-      if (f_resist > f_push) {
-          actual_f_resist = f_push;
-          f_net = 0.0f; // Stall
-          if (dozer->twist_linear_x > 0.0f) {
-              dozer->twist_linear_x = 0.0f;
-          }
-      } else {
-          actual_f_resist = f_resist;
-          f_net = f_push - f_resist;
+  if (f_push > 0.0f || (f_push == 0.0f && dozer->twist_linear_x > 0.01f))
+  {
+    if (f_resist > f_push)
+    {
+      actual_f_resist = f_push;
+      f_net = 0.0f; // Stall
+
+      if (dozer->twist_linear_x > 0.0f)
+      {
+        dozer->twist_linear_x = 0.0f;
       }
-  } else if (f_push < 0.0f || (f_push == 0.0f && dozer->twist_linear_x < -0.01f)) {
-      if (f_resist > fabsf(f_push)) {
-          actual_f_resist = fabsf(f_push);
-          f_net = 0.0f; // Stall
-          if (dozer->twist_linear_x < 0.0f) {
-              dozer->twist_linear_x = 0.0f;
-          }
-      } else {
-          actual_f_resist = f_resist;
-          f_net = f_push + f_resist; // f_push is negative, f_resist is positive, so addition reduces magnitude
+    }
+    else
+    {
+      actual_f_resist = f_resist;
+      f_net = f_push - f_resist;
+    }
+  }
+  else if (f_push < 0.0f || (f_push == 0.0f && dozer->twist_linear_x < -0.01f))
+  {
+    if (f_resist > fabsf(f_push))
+    {
+      actual_f_resist = fabsf(f_push);
+      f_net = 0.0f; // Stall
+
+      if (dozer->twist_linear_x < 0.0f)
+      {
+        dozer->twist_linear_x = 0.0f;
       }
+    }
+    else
+    {
+      actual_f_resist = f_resist;
+      f_net = f_push + f_resist; // f_push is negative, f_resist is positive, so addition reduces magnitude
+    }
   }
 
   dozer->twist_linear_x += (f_net / dozer->machine_mass) * dt;
@@ -833,8 +947,9 @@ static inline void update_chassis_velocity(SoilEnv* env, float dt) {
 
   // Yaw dynamics: differential track torque plus the (scaled) soil reaction moment.
   float actual_yaw_moment = 0.0f;
-  if (f_resist > 0.001f) {
-      actual_yaw_moment = dozer->last_yaw_moment * (actual_f_resist / f_resist);
+  if (f_resist > 0.001f)
+  {
+    actual_yaw_moment = dozer->last_yaw_moment * (actual_f_resist / f_resist);
   }
   float torque_net = drive_torque + actual_yaw_moment;
   dozer->twist_angular_z += (torque_net / dozer->machine_inertia) * dt;
@@ -860,10 +975,10 @@ static inline void update_chassis_2d_position(SoilEnv* env, float dt)
   // 1. Update orientation quaternion by integrating local angular velocity around Z axis
   float theta = dozer->twist_angular_z * dt;
   float q_rot[4] = {cosf(theta * 0.5f), 0.0f, 0.0f, sinf(theta * 0.5f)};
-  
+
   float q_new[4];
   quat_multiply(dozer->q, q_rot, q_new);
-  
+
   // Normalize the quaternion
   float len = sqrtf(q_new[0]*q_new[0] + q_new[1]*q_new[1] + q_new[2]*q_new[2] + q_new[3]*q_new[3]);
   if (len > 1e-6f)
@@ -881,7 +996,7 @@ static inline void update_chassis_2d_position(SoilEnv* env, float dt)
 
   dozer->position_x += v_world[0] * dt;
   dozer->position_y += v_world[1] * dt;
-  
+
   // 3. Keep Euler angles in sync for logging/rendering/coordinate projection
   float rpy[3];
   quat_to_euler(dozer->q, rpy);
@@ -950,20 +1065,27 @@ static inline void interact_with_soil(SoilEnv* env)
   // Direction of the blade's forward vector projected on the horizontal (X-Y) plane
   float x_denom = sqrtf(x_axis_world[0] * x_axis_world[0] + x_axis_world[1] * x_axis_world[1]);
   if (x_denom < 1e-6f) x_denom = 1e-6f;
-  
+
   // Soil-push direction. Follow motion when it's clear; fall back to commanded effort when
   // nearly stopped; otherwise hold the previous direction (hysteresis) so we don't flip-flop
   // while creeping through zero velocity (e.g. coasting out of a backdrag). Stored on the dozer
   // so simulate_erosion() and update_surcharge() reuse the same direction this step.
   float push_sign = dozer->last_push_sign;
-  if (dozer->twist_linear_x > 0.01f) {
-      push_sign = 1.0f;
-  } else if (dozer->twist_linear_x < -0.01f) {
-      push_sign = -1.0f;
-  } else if (dozer->effort_linear > 0.01f) {
-      push_sign = 1.0f;
-  } else if (dozer->effort_linear < -0.01f) {
-      push_sign = -1.0f;
+  if (dozer->twist_linear_x > 0.01f)
+  {
+    push_sign = 1.0f;
+  }
+  else if (dozer->twist_linear_x < -0.01f)
+  {
+    push_sign = -1.0f;
+  }
+  else if (dozer->effort_linear > 0.01f)
+  {
+    push_sign = 1.0f;
+  }
+  else if (dozer->effort_linear < -0.01f)
+  {
+    push_sign = -1.0f;
   }
   dozer->last_push_sign = push_sign;
 
@@ -1004,20 +1126,29 @@ static inline void interact_with_soil(SoilEnv* env)
 
       if (depth > 0.0f)
       {
-        float old_c = cell_error_contrib(env, x0, y0);
-        if (env->grid_L[x0][y0] > 0.0f)
+        float prev_error = cell_error_absolute(env, x0, y0);
+
+        if (env->grid_L[x0][y0] > 0.0f)  // first check loose soil
         {
           float l_cut = (depth < env->grid_L[x0][y0]) ? depth : env->grid_L[x0][y0];
-          env->grid_L[x0][y0] -= l_cut; 
-          depth -= l_cut; 
+          env->grid_L[x0][y0] -= l_cut;
+          depth -= l_cut;
           cell_cut_vol += l_cut * CELL_SIZE * CELL_SIZE;
         }
-        if (depth > 0.0f)
+
+        if (depth > 0.0f)  // if we cut through loose and hit hard soil
         {
           env->grid_H[x0][y0] -= depth; 
           cell_cut_vol += depth * CELL_SIZE * CELL_SIZE * env->swell_ratio;
         }
-        env->cur_error += cell_error_contrib(env, x0, y0) - old_c;
+
+        float error = cell_error_absolute(env, x0, y0);
+        env->map_error_absolute +=  error - prev_error;
+
+        if (env->map_region[x0][y0] == 1 || env->map_region[x0][y0] == 2)  // if we're in a cut region
+        {
+          env->map_error_goal += error - prev_error;
+        }
       }
 
       if (num_cells < 100)
@@ -1050,8 +1181,18 @@ static inline void interact_with_soil(SoilEnv* env)
     // Bresenham step
     if (x0 == x1 && y0 == y1) break;
     int e2 = 2 * err;
-    if (e2 >= -dy_i) { err -= dy_i; x0 += sx; }
-    if (e2 <= dx_i) { err += dx_i; y0 += sy; }
+
+    if (e2 >= -dy_i)
+    {
+      err -= dy_i;
+      x0 += sx;
+    }
+
+    if (e2 <= dx_i)
+    {
+      err += dx_i;
+      y0 += sy;
+    }
   }
 
   dozer->last_force = total_force;
@@ -1075,9 +1216,17 @@ static inline void interact_with_soil(SoilEnv* env)
       int dep_y = (int)floorf(dep_global_y / CELL_SIZE);
       if ((unsigned int)dep_x < GRID_SIZE && (unsigned int)dep_y < GRID_SIZE)
       {
-        float old_c = cell_error_contrib(env, dep_x, dep_y);
+        float prev_error = cell_error_absolute(env, dep_x, dep_y);
+
         env->grid_L[dep_x][dep_y] += dh;
-        env->cur_error += cell_error_contrib(env, dep_x, dep_y) - old_c;
+
+        float error = cell_error_absolute(env, dep_x, dep_y) - prev_error;
+        env->map_error_absolute += error;
+
+        if (env->map_region[dep_x][dep_y] == 1 || env->map_region[dep_x][dep_y] == 2)
+        {
+          env->map_error_goal += error;
+        }
       }
     }
   }
@@ -1127,16 +1276,41 @@ static inline void update_joint_pos(SoilEnv* env, float dt)
   Dozer * dozer = &env->dozer;
 
   dozer->pos_virtual_lift_arm += dozer->vel_virtual_lift_arm * dt;
-  if (dozer->pos_virtual_lift_arm < dozer->pos_virtual_lift_arm_min) dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_min;
-  if (dozer->pos_virtual_lift_arm > dozer->pos_virtual_lift_arm_max) dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_max;
+
+  if (dozer->pos_virtual_lift_arm < dozer->pos_virtual_lift_arm_min)
+  {
+    dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_min;
+    dozer->vel_virtual_lift_arm = 0;  // hit limit
+  }
+  if (dozer->pos_virtual_lift_arm > dozer->pos_virtual_lift_arm_max)
+  {
+    dozer->pos_virtual_lift_arm = dozer->pos_virtual_lift_arm_max;
+    dozer->vel_virtual_lift_arm = 0;  // hit limit
+  }
 
   dozer->pos_blade_pitch += dozer->vel_blade_pitch * dt;
-  if (dozer->pos_blade_pitch < dozer->pos_blade_pitch_min) dozer->pos_blade_pitch = dozer->pos_blade_pitch_min;
-  if (dozer->pos_blade_pitch > dozer->pos_blade_pitch_max) dozer->pos_blade_pitch = dozer->pos_blade_pitch_max;
+  if (dozer->pos_blade_pitch < dozer->pos_blade_pitch_min)
+  {
+    dozer->pos_blade_pitch = dozer->pos_blade_pitch_min;
+    dozer->vel_blade_pitch = 0;  // hit limit
+  }
+  if (dozer->pos_blade_pitch > dozer->pos_blade_pitch_max)
+  {
+    dozer->pos_blade_pitch = dozer->pos_blade_pitch_max;
+    dozer->vel_blade_pitch = 0;  // hit limit
+  }
 
   dozer->pos_blade_roll += dozer->vel_blade_roll * dt;
-  if (dozer->pos_blade_roll < dozer->pos_blade_roll_min) dozer->pos_blade_roll = dozer->pos_blade_roll_min;
-  if (dozer->pos_blade_roll > dozer->pos_blade_roll_max) dozer->pos_blade_roll = dozer->pos_blade_roll_max;
+  if (dozer->pos_blade_roll < dozer->pos_blade_roll_min)
+  {
+    dozer->pos_blade_roll = dozer->pos_blade_roll_min;
+    dozer->vel_blade_roll = 0;  // hit limit
+  }
+  if (dozer->pos_blade_roll > dozer->pos_blade_roll_max)
+  {
+    dozer->pos_blade_roll = dozer->pos_blade_roll_max;
+    dozer->vel_blade_roll = 0;  // hit limit
+  }
 }
 
 static inline void simulate_erosion(SoilEnv* env, const int num_loops)
@@ -1151,11 +1325,10 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   int min_j = clamp_idx(center_j - margin);
   int max_j = clamp_idx(center_j + margin);
 
-  // Local scratch buffers are indexed relative to the blade-centered window origin (base_i, base_j),
-  // so we only allocate the small EROSION_WIN^2 window instead of the full grid. Absolute grid cell
-  // (i, j) maps to local cell (i - base_i, j - base_j); the clamped [min,max] range always fits in [0, EROSION_WIN).
-  int base_i = center_i - margin;
-  int base_j = center_j - margin;
+  // Local scratch buffers are indexed relative to the clamped window origin (base_i=min_i, base_j=min_j),
+  // so the [min,max] range always fits in [0, EROSION_WIN) even when blade is off-map (center far outside).
+  int base_i = min_i;
+  int base_j = min_j;
 
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
@@ -1173,16 +1346,17 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
 
   float min_lx = (push_sign > 0.0f) ? -loader_length : 0.0f;
   float max_lx = (push_sign > 0.0f) ? 0.0f : loader_length;
-  
+
   float cx[4] = {min_lx, max_lx, max_lx, min_lx};
   float cy[4] = {-half_bw, -half_bw, half_bw, half_bw};
-  
+
   int frozen_min_i = max_i;
   int frozen_max_i = min_i;
   int frozen_min_j = max_j;
   int frozen_max_j = min_j;
 
-  for (int c = 0; c < 4; c++) {
+  for (int c = 0; c < 4; c++)
+  {
     float wx = dozer->blade_x + cx[c] * cos_y - cy[c] * sin_y;
     float wy = dozer->blade_y + cx[c] * sin_y + cy[c] * cos_y;
     int gi = (int)floorf(wx / CELL_SIZE);
@@ -1192,7 +1366,7 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
     if (gj < frozen_min_j) frozen_min_j = gj;
     if (gj > frozen_max_j) frozen_max_j = gj;
   }
-  
+
   frozen_min_i = clamp_idx(frozen_min_i - 1);
   frozen_max_i = clamp_idx(frozen_max_i + 1);
   frozen_min_j = clamp_idx(frozen_min_j - 1);
@@ -1246,12 +1420,13 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
         temp_L[li][lj] = L;
         temp_T[li][lj] = env->grid_H[i][j] + L;
         delta_L[li][lj] = 0.0f;
-        if (L > 1e-4f) {
-           any_loose = 1;
-           if (i < active_min_i) active_min_i = i;
-           if (i > active_max_i) active_max_i = i;
-           if (j < active_min_j) active_min_j = j;
-           if (j > active_max_j) active_max_j = j;
+        if (L > 1e-4f)
+        {
+          any_loose = 1;
+          if (i < active_min_i) active_min_i = i;
+          if (i > active_max_i) active_max_i = i;
+          if (j < active_min_j) active_min_j = j;
+          if (j > active_max_j) active_max_j = j;
         }
       }
     }
@@ -1328,10 +1503,18 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
       {
         float d = delta_L[i - base_i][j - base_j];
         if (fabsf(d) < 1e-9f) continue;
-        float old_c = cell_error_contrib(env, i, j);
+
+        float prev_error = cell_error_absolute(env, i, j);
         env->grid_L[i][j] += d;
         if (env->grid_L[i][j] < 0.0f) env->grid_L[i][j] = 0.0f;
-        env->cur_error += cell_error_contrib(env, i, j) - old_c;
+
+        float error = cell_error_absolute(env, i, j) - prev_error;
+        env->map_error_absolute += error;
+
+        if (env->map_region[i][j] == 1 || env->map_region[i][j] == 2)
+        {
+          env->map_error_goal += error;
+        }
       }
     }
 
@@ -1407,7 +1590,15 @@ static inline void update_surcharge(SoilEnv* env)
       // Check if the cell is inside the 1.5m box on the working side of the blade
       if (local_x >= 0.0f && local_x <= lookahead && fabsf(local_y) <= half_width)
       {
-        current_surcharge_vol += env->grid_L[i][j] * cell_area;
+        // Only count loose soil at or above the bottom edge of the blade at this lateral position
+        float section_blade_z = dozer->blade_z + local_y * y_axis_world[2];
+        float total_h = env->grid_H[i][j] + env->grid_L[i][j];
+        if (total_h <= section_blade_z) continue;
+        float h_hard = env->grid_H[i][j];
+        float effective_loose = total_h - fmaxf(h_hard, section_blade_z);
+        if (effective_loose <= 0.0f) continue;
+        if (effective_loose > env->grid_L[i][j]) effective_loose = env->grid_L[i][j];
+        current_surcharge_vol += effective_loose * cell_area;
       }
     }
   }
@@ -1467,36 +1658,44 @@ static inline void generate_goal_map(SoilEnv* env)
     }
   }
 
-  float width = dozer->blade_width * 1.5f;   // slot & pile span one blade width
-  float half_w = width * 0.5f;
+  float slot_width = dozer->blade_width;            // slot as wide as blade
+  float pile_width = dozer->blade_width * 1.75f;      // pile ~1.75× wider for slumping
+  float half_slot_w = slot_width * 0.5f;
+  float half_pile_w = pile_width * 0.5f;
 
   // Randomized geometry (per-episode)
-  float slot_len    = 5.5f + rand_f(&env->rng) * 2.5f;   // [2.5, 5.0] m
+  float slot_len    = 5.5f + rand_f(&env->rng) * 1.5f;   // [5.5, 7.0] m
   float slot_depth  = 0.15f + rand_f(&env->rng) * 0.10f; // [0.15, 0.25] m
   float pile_height = 0.8f + rand_f(&env->rng) * 0.4f;   // [0.8, 1.2] m (~1 m)
 
-  // Volume balance: loose pile = swell_ratio * compacted cut
-  float cut_volume  = slot_len * width * slot_depth;
+  // Volume balance: loose pile = swell_ratio * compacted cut (slot width vs pile width)
+  float cut_volume  = slot_len * slot_width * slot_depth;
   float pile_volume = env->swell_ratio * cut_volume;
 
-  // Triangular ridge across the blade width: V = 0.5 * base * height * width  ->  base length:
-  float pile_len = (3.0f * pile_volume) / (pile_height * width);
+  // Gaussian pile across pile_width: V = ∫h dA  ->  base length from volume
+  float pile_len = (3.0f * pile_volume) / (pile_height * pile_width);
 
   // Random heading; the slot mouth begins at the dozer and runs outward, pile at the far end.
-  // float theta = rand_f(&env->rng) * 2.0f * PI;
-  float theta = 0;
+  float theta = rand_f(&env->rng) * 2.0f * PI;
+  // float theta = 0;
   float dir_x = cosf(theta),  dir_y = sinf(theta);
   float perp_x = -dir_y,      perp_y = dir_x;
-  float start_x = dozer->position_x + 2.0f;
-  float start_y = dozer->position_y;
+
+  env->start_x = rand_f(&env->rng) + 15.0f;
+  env->start_y = rand_f(&env->rng) + 15.0f;
+
+  float start_x = env->start_x;
+  float start_y = env->start_y;
 
   float total_len = slot_len + pile_len;
   float half_pile = pile_len * 0.5f;
+  env->goal_pile_x = 0.0f;
+  env->goal_pile_y = 0.0f;
 
   // Gaussian pile: bell-shaped mound with ~30° repose, volume-matched to cut*swell
   // Two-pass to preserve exact volume: first pass sum raw Gaussian, second apply scaled heights
   float sigma_p = pile_len * 0.25f; // along-pile std (≈ pile_len/4 gives ~30° side slope)
-  float sigma_v = half_w * 0.5f;    // across-pile std (≈ width/4)
+  float sigma_v = half_pile_w * 0.5f;    // across-pile std (≈ pile_width/4)
   if (sigma_p < 0.2f) sigma_p = 0.2f;
   if (sigma_v < 0.2f) sigma_v = 0.2f;
   float raw_vol = 0.0f;
@@ -1510,7 +1709,7 @@ static inline void generate_goal_map(SoilEnv* env)
       float ry = cell_y - start_y;
       float u = rx * dir_x + ry * dir_y;
       float v = rx * perp_x + ry * perp_y;
-      if (fabsf(v) > half_w) continue;
+      if (fabsf(v) > half_pile_w) continue;
       if (u < 0.0f || u > total_len) continue;
       if (u <= slot_len) continue; // slot not part of pile volume
       float p = u - slot_len;
@@ -1534,16 +1733,17 @@ static inline void generate_goal_map(SoilEnv* env)
       float u = rx * dir_x + ry * dir_y;    // along the slot->pile axis
       float v = rx * perp_x + ry * perp_y;  // across the width
 
-      if (fabsf(v) > half_w) continue;      // outside the worked strip
       if (u < 0.0f || u > total_len) continue;
 
       if (u <= slot_len)
       {
+        if (fabsf(v) > half_slot_w) continue; // slot width = blade width
         env->grid_G[i][j] -= slot_depth;    // dig the slot
         env->map_region[i][j] = 1;          // 1 = Cut
       }
       else
       {
+        if (fabsf(v) > half_pile_w) continue; // pile ~1.75× wider for slumping
         float p = u - slot_len;             // 0..pile_len within the pile
         float dp = p - half_pile;
         float h_raw = expf(-0.5f * ((dp*dp)/(sigma_p*sigma_p) + (v*v)/(sigma_v*sigma_v)));
@@ -1560,6 +1760,8 @@ static inline void generate_goal_map(SoilEnv* env)
 
 static inline void env_reset(SoilEnv* env)
 {
+  memset(env->observations, 0, 5011*sizeof(float));
+
   env->loose_soil_density = 1200.0f;
   env->soil_gamma = 15000.0f;
   env->soil_c = 300.0f;   // (Pa) soil cohesion
@@ -1603,9 +1805,9 @@ static inline void env_reset(SoilEnv* env)
   dozer->roll_inertia = 80.0f;
   dozer->pitch_intertia = 19.0f;
 
-  // damping
+  // damping - retuned: lift/pitch were 10k× track, forcing bang-bang to move
   dozer->hydraulic_stiffness = 0.9998f;
-  dozer->track_damping = 3.0f; // (30000 / 8570)
+  dozer->track_damping = 3.0f;
   dozer->virtual_lift_arm_damping = 30000.0f;
   dozer->blade_pitch_damping = 5000.0f;
   dozer->blade_roll_damping = 5000.0f;
@@ -1625,13 +1827,13 @@ static inline void env_reset(SoilEnv* env)
   dozer->effort_linear = 0.0f;      // efort
   dozer->effort_rotational = 0.0f;  // efort
 
-  // Joint States POS
-  dozer->pos_tracks_rotational = 0.0f;
-  dozer->pos_tracks_linear = 0.0f;
-  dozer->pos_virtual_lift_arm = -0.45f;  // (rad) arm angle
-  dozer->pos_blade_pitch = 0.45f;       // (rad) blade pitch
-  dozer->pos_blade_roll = 0.0f;        // (rad) blade roll
-  dozer->pos_blade_yaw = 0.0f;         // (rad) blade yaw
+  // Joint States POS — start with blade slightly above ground plane (~0.1-0.2m)
+  dozer->pos_tracks_rotational  = 0.0f;
+  dozer->pos_tracks_linear      = 0.0f;
+  dozer->pos_virtual_lift_arm   = rand_f(&env->rng) - 0.5;  // (rad) arm angle [-0.5, 0.5] (-0.43 is just on soil)
+  dozer->pos_blade_pitch        = rand_f(&env->rng) - 0.5;  // (rad) blade pitch [-0.5, 0.5]
+  dozer->pos_blade_roll         = 0.0f;                     // (rad) blade roll
+  dozer->pos_blade_yaw          = 0.0f;                     // (rad) blade yaw
 
   // Joint States VEL
   dozer->vel_tracks_rotational = 0.0f;  // (rad/s) tracks rotational velocity
@@ -1641,9 +1843,11 @@ static inline void env_reset(SoilEnv* env)
   dozer->vel_blade_roll = 0.0f;         // Current relative roll velocity (rad/s)
   dozer->vel_blade_yaw = 0.0f;          // Current relative yaw velocity (rad/s)
 
+  // dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f - 10.0f;
+  // dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
 
-  dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f - 10.0f;
-  dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
+  dozer->position_x = 5.0f + rand_f(&env->rng)*10.0f;
+  dozer->position_y = 5.0f + rand_f(&env->rng)*10.0f;
   dozer->position_z = 1.0f;
 
   dozer->q[0] = 1.0f;
@@ -1653,11 +1857,12 @@ static inline void env_reset(SoilEnv* env)
 
   dozer->last_push_sign = 1.0f;  // default to forward until motion/effort says otherwise
 
-  for(int i = 0; i < GRID_SIZE; i++) {
-    for(int j = 0; j < GRID_SIZE; j++) {
+  for(int i = 0; i < GRID_SIZE; i++)
+  {
+    for(int j = 0; j < GRID_SIZE; j++)
+    {
       env->grid_H[i][j] = 1.0f;
       env->grid_L[i][j] = 0.0f;
-      env->original_H[i][j] = env->grid_H[i][j] + env->grid_L[i][j];  // snapshot of starting terrain
     }
   }
 
@@ -1666,29 +1871,49 @@ static inline void env_reset(SoilEnv* env)
   precompute_soil_bearing_capacity(env);
 
   // reward bookkeeping — init from terrain error (volume error over cut/fill zone)
-  env->initial_error = compute_terrain_error(env);
-  env->cur_error = env->initial_error;
-  env->prev_progress = 0.0f;
+  env->initial_error_absolute = compute_terrain_error(env);
+  env->initial_error_goal     = env->initial_error_absolute;  // at init, the goal map is the same as the terrain, except for the goal!
+  env->map_error_absolute     = env->initial_error_absolute;
+  env->map_error_goal         = env->initial_error_absolute;
+  env->map_error_goal_prev    = env->initial_error_absolute;
+  env->map_error_directional  = env->initial_error_absolute;
+  env->map_error_directional_prev = env->initial_error_absolute;
+
+  env->num_obs_cells  = 0.0f;
+  env->prev_obs_cells  = -1.0f;
   env->episode_return = 0.0f;
-  env->count_off_map = 0.0f;
-  env->count_jitter = 0.0f;
-  env->count_large_neg_rewards = 0.0f;
+
   memset(&env->log, 0, sizeof(Log));
   env->log.perf = 0.0f;
   env->log.n = 0.0f;
-  env->log.max_vel_arm = -1e9f;
-  env->log.max_vel_blade_pitch = -1e9f;
-  env->log.max_vel_blade_roll = -1e9f;
-  env->log.max_vel_linear = -1e9f;
-  env->log.min_vel_arm = 1e9f;
-  env->log.min_vel_blade_pitch = 1e9f;
-  env->log.min_vel_blade_roll = 1e9f;
-  env->log.min_vel_linear = 1e9f;
+
+  // rewards
+  env->log.r_goal_obs   = 0.0f;
+  env->log.r_push       = 0.0f;
+  env->log.r_stationary = 0.0f;
+  env->log.r_progress   = 0.0f;
+
+  env->log.episode_length = 0.0f;
+
+  env->log.max_vel_arm          = -1e9f;
+  env->log.max_vel_blade_pitch  = -1e9f;
+  env->log.max_vel_blade_roll   = -1e9f;
+  env->log.max_vel_linear       = -1e9f;
+  env->log.max_vel_rotational   = -1e9f;
+  env->log.max_vel_blade_yaw    = -1e9f;
+  env->log.min_vel_arm          = 1e9f;
+  env->log.min_vel_blade_pitch  = 1e9f;
+  env->log.min_vel_blade_roll   = 1e9f;
+  env->log.min_vel_linear       = 1e9f;
+  env->log.min_vel_rotational   = 1e9f;
+  env->log.min_vel_blade_yaw    = 1e9f;
+
+  env->log.max_height = -1e9f;
+  env->log.min_height = 1e9f;
 }
 
 void c_reset(SoilEnv* env)
 {
-  env->tick = 0;
   env->step_num = 0;
   memset(&env->dozer, 0, sizeof(Dozer));
   env_reset(env);
@@ -1698,7 +1923,7 @@ void c_reset(SoilEnv* env)
 void c_step(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
-  env->tick +=1;
+  env->step_num +=1;
 
   // get inputs
   // Continuous acitons: Clamp to [-1, 1] and then threshold
@@ -1706,7 +1931,7 @@ void c_step(SoilEnv* env)
   dozer->effort_rotational = clamp_action(env->actions[1]);
   dozer->effort_lift       = clamp_action(env->actions[2]);
   dozer->effort_pitch      = clamp_action(env->actions[3]);
-  dozer->effort_roll       = clamp_action(env->actions[4]);
+  dozer->effort_roll       = 0;
   dozer->effort_yaw        = 0;  // this should just get zero'd (since we don't have control over this)
 
   env->terminals[0] = 0;  // zero these guys just in case
@@ -1715,7 +1940,7 @@ void c_step(SoilEnv* env)
   // Single physics step per control action (no top-level sub-stepping for now).
   // Soil erosion still sub-loops internally (see simulate_erosion, num_loops=3).
   // Revisit if the main loop proves unstable once we run/test the sim.
-  simulate_step(env, 0.0167);
+  simulate_step(env, 0.02);
 
   // get observations (rewards and terminals also seen here, since we're already doing some loops!)
   get_obs(env);
