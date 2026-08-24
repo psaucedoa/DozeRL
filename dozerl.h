@@ -378,6 +378,8 @@ static inline void get_obs(SoilEnv* env)
       // world = base + dx*cos - dy*sin , base_y + dx*sin + dy*cos
       float sum_cur = 0.0f;
       float sum_goal = 0.0f;
+      int goal = 0;
+
       for (int dy = 0; dy < 2; dy++)
       {
         for (int dx = 0; dx < 2; dx++)
@@ -394,6 +396,7 @@ static inline void get_obs(SoilEnv* env)
             if (env->map_region[grid_i][grid_j] == 1 || env->map_region[grid_i][grid_j] == 2)
             {
               env->num_obs_cells += 1;
+              goal = 1;
             }
           }
 
@@ -411,7 +414,14 @@ static inline void get_obs(SoilEnv* env)
       {
         env->observations[h_obs_index] = 1.0f;  // clip max obs to prevent soil spikes from going way oob
       }
-      env->observations[g_obs_index] = (avg_cur - avg_goal) * 0.25f;
+      if(goal == 1)
+      {
+        env->observations[g_obs_index] = (avg_cur - avg_goal) * 0.25f;
+      }
+      else
+      {
+        env->observations[g_obs_index] = 0.0f;
+      }
       // track max & min observed raw heightmap cell for PufferLib logging
       if (env->observations[h_obs_index] > env->log.max_height) env->log.max_height = env->observations[h_obs_index];
       if (env->observations[h_obs_index] < env->log.min_height) env->log.min_height = env->observations[h_obs_index];
@@ -455,7 +465,9 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   // progress reward
   // how we sturcture this also depends on if we want to reward for % completed of task, or amount of error corrected
   // ('per-task' vs 'per-action')
-  float r_progress = (env->map_error_goal_prev - env->map_error_goal) * 5.0f;
+  float r_progress = (env->map_error_goal_prev - env->map_error_goal) * 50.0f;
+  if(r_progress < 0.0f) r_progress = 0.0f;
+
   env->map_error_goal_prev = env->map_error_goal;
   // delta = delta / (CELL_AREA * CELL_SIZE);  // this could be simplified by just normalizing by # of cells...
 
@@ -468,22 +480,21 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   else
   {
     float delta_cells = env->num_obs_cells - env->prev_obs_cells;
-    r_goal_obs = delta_cells * 0.01;
+    r_goal_obs = delta_cells * 0.03;
   }
   env->prev_obs_cells = env->num_obs_cells;
 
-  // pushing reward - if we are moving forward and pushing soil (maybe make dir independent)
-  float r_push = 0.0f;
-  if (dozer->twist_linear_x > 0.1f && dozer->blade_surcharge_Q > 1000.0f)
+  float r_push = dozer->twist_linear_x * 0.02;
+  if (dozer->twist_linear_x > 0.1)
   {
-    r_push = 0.01f;
+    r_push += dozer->blade_surcharge_Q * 0.000003f;
   }
 
   // stationary penalty
   float r_stationary = 0.0f;
   if (fabs(dozer->twist_linear_x) < 0.1f)
   {
-    r_stationary = -0.02f;
+    r_stationary = -0.01f - (0.1f - fabs(dozer->twist_linear_x));
   }
 
   // jitter penalty, maybe
@@ -504,10 +515,11 @@ static inline void update_reward_and_terminal(SoilEnv* env)
     done = 1;
   }
 
-  env->rewards[0] = r_progress + r_push + r_stationary + r_success + r_goal_obs;
+  env->rewards[0] = (r_progress + r_push + r_success + r_goal_obs);
+  env->episode_return += r_progress + r_push + r_success + r_goal_obs;
+
   env->terminals[0] = (float)done;
 
-  env->episode_return += r_progress + r_push + r_stationary + r_success + r_goal_obs;
 
   // Logs for PufferLib
   env->log.r_goal_obs   += r_goal_obs;
@@ -515,7 +527,7 @@ static inline void update_reward_and_terminal(SoilEnv* env)
   env->log.r_push       += r_push;
   env->log.r_stationary += r_stationary;
   env->log.perf = perf;
-  // env->log.score = -cur_error;
+  env->log.score = env->initial_error_goal - env->map_error_goal;
   env->log.episode_return = env->episode_return;
   env->log.episode_length = (float)env->step_num;
   env->log.n = done ? 1.0f : 0.0f;
@@ -1880,6 +1892,8 @@ static inline void env_reset(SoilEnv* env)
   env->log.r_push       = 0.0f;
   env->log.r_stationary = 0.0f;
   env->log.r_progress   = 0.0f;
+
+  env->log.episode_length = 0.0f;
 
   env->log.max_vel_arm          = -1e9f;
   env->log.max_vel_blade_pitch  = -1e9f;
