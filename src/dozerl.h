@@ -356,6 +356,10 @@ static inline void get_obs(SoilEnv* env)
   float cos_y = dozer->cos_yaw;
   float sin_y = dozer->sin_yaw;
 
+  // Precompute static 2x2 sample offsets in vehicle-aligned frame
+  const float sample_ox[4] = { 0.0f, cos_y, -sin_y, cos_y - sin_y };
+  const float sample_oy[4] = { 0.0f, sin_y,  cos_y, sin_y + cos_y };
+
   // Observe 100x100 cells (20m x 20m at 0.2m/cell) but downscale 2x2 average -> 50x50 obs.
   const float half_src = 50.0f;
   float obs_start_x = (dozer->position_x / CELL_SIZE) - half_src * cos_y + half_src * sin_y;
@@ -378,20 +382,17 @@ static inline void get_obs(SoilEnv* env)
       int h_obs_index = (i * SPATIAL_OBS_SIZE) + j + obs_offset;
       int g_obs_index = h_obs_index + (SPATIAL_OBS_SIZE * SPATIAL_OBS_SIZE);  // we offset this by the amount of cells in the obs to concatenate to 1d array
 
-      // 2x2 average in the vehicle-aligned frame: offsets (dx,dy) in {0,1}
-      // world = base + dx*cos - dy*sin , base_y + dx*sin + dy*cos
+      // 2x2 average in the vehicle-aligned frame
       float sum_cur = 0.0f;
       float sum_goal = 0.0f;
       int goal = 0;
 
-      for (int dy = 0; dy < 2; dy++)
+      for (int s = 0; s < 4; s++)
       {
-        for (int dx = 0; dx < 2; dx++)
-        {
-          float sx = base_x + dx * cos_y - dy * sin_y;
-          float sy = base_y + dx * sin_y + dy * cos_y;
-          int grid_i = (int)floorf(sx);
-          int grid_j = (int)floorf(sy);
+        float sx = base_x + sample_ox[s];
+        float sy = base_y + sample_oy[s];
+        int grid_i = (int)floorf(sx);
+        int grid_j = (int)floorf(sy);
           if ((unsigned int)grid_i < GRID_SIZE && (unsigned int)grid_j < GRID_SIZE)
           {
             sum_cur += env->grid_H[grid_i][grid_j] + env->grid_L[grid_i][grid_j];
@@ -405,7 +406,6 @@ static inline void get_obs(SoilEnv* env)
           }
 
           // out-of-bounds contributes 0, matching previous zero-padding (divided by 4 below)
-        }
       }
       float avg_cur = sum_cur * 0.25f;
       float avg_goal = sum_goal * 0.25f;
@@ -437,15 +437,7 @@ static inline float cell_error_absolute(SoilEnv* env, int i, int j)
 {
   float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
   float goal = env->grid_G[i][j];
-  float diff = fabs(cur_h - goal);  // absolute diff
-  return diff * CELL_AREA;
-}
-
-static inline float cell_error_directional(SoilEnv* env, int i, int j)
-{
-  float cur_h = env->grid_H[i][j] + env->grid_L[i][j];
-  float goal = env->grid_G[i][j];
-  float diff = fabs(cur_h - goal);  // absolute diff
+  float diff = fabsf(cur_h - goal);  // absolute diff
   return diff * CELL_AREA;
 }
 
@@ -496,9 +488,9 @@ static inline void update_reward_and_terminal(SoilEnv* env)
 
   // stationary penalty
   float r_stationary = 0.0f;
-  if (fabs(dozer->twist_linear_x) < 0.1f)
+  if (fabsf(dozer->twist_linear_x) < 0.1f)
   {
-    r_stationary = -0.01f - (0.1f - fabs(dozer->twist_linear_x));
+    r_stationary = -0.01f - (0.1f - fabsf(dozer->twist_linear_x));
   }
 
   // jitter penalty, maybe
@@ -568,7 +560,7 @@ static inline float calculate_max_traction(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  float track_area = 2.0f * dozer->track_length * dozer->track_width;
+  float track_area = dozer->track_contact_area;
   float machine_weight = dozer->machine_mass * GRAVITY;
   return track_area * env->soil_c + machine_weight * tanf(env->soil_phi);
 }
@@ -1104,6 +1096,10 @@ static inline void interact_with_soil(SoilEnv* env)
   float cut_vol[100];
   int num_cells = 0;
 
+  float denom = y_axis_world[0] * y_axis_world[0] + y_axis_world[1] * y_axis_world[1];
+  if (denom < 1e-6f) denom = 1e-6f;
+  float inv_denom = 1.0f / denom;
+
   while (1)
   {
     if ((unsigned int)x0 < GRID_SIZE && (unsigned int)y0 < GRID_SIZE)
@@ -1115,9 +1111,7 @@ static inline void interact_with_soil(SoilEnv* env)
       float dy = cell_m_y - dozer->blade_y;
 
       // Project the offset onto the 2D projected y_axis_world
-      float denom = y_axis_world[0] * y_axis_world[0] + y_axis_world[1] * y_axis_world[1];
-      if (denom < 1e-6f) denom = 1e-6f;
-      float local_y = (dx * y_axis_world[0] + dy * y_axis_world[1]) / denom;
+      float local_y = (dx * y_axis_world[0] + dy * y_axis_world[1]) * inv_denom;
 
       // The exact 3D height of the blade at this lateral position
       float section_blade_z = dozer->blade_z + local_y * y_axis_world[2];
@@ -1902,6 +1896,7 @@ static inline void env_reset(SoilEnv* env)
   dozer->sin_yaw = sinf(init_yaw);
   euler_to_quat(0.0f, 0.0f, init_yaw, dozer->q);
 
+  dozer->track_contact_area = 2.0f * dozer->track_length * dozer->track_width;
   dozer->last_push_sign = 1.0f;  // default to forward until motion/effort says otherwise
 
   for(int i = 0; i < GRID_SIZE; i++)
