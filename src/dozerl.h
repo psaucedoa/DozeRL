@@ -70,6 +70,11 @@ typedef struct
   float twist_linear_y;   // (m/s)   Dozer linear velocity about Y axis
   float twist_linear_z;   // (m/s)   Dozer linear velocity about Z axis
   float q[4];             // [w, x, y, z] quaternion orientation of the chassis
+  float cos_yaw;          // ( ) Cached cos(angular_z) for current step
+  float sin_yaw;          // ( ) Cached sin(angular_z) for current step
+  float q_blade[4];       // [w, x, y, z] blade orientation quaternion in world frame
+  float blade_normal_world[3];  // Blade forward unit vector in world frame (local X)
+  float blade_lateral_world[3]; // Blade lateral unit vector in world frame (local Y)
 
   // Effort Inputs (-1.0 to 1.0)
   float effort_lift;        // efort
@@ -347,10 +352,9 @@ static inline void get_obs(SoilEnv* env)
     env->observations[10] = q_noisy / 15000.0f; // 0=empty, ~1=full blade
   }
   int obs_offset = 11;  // 11 proprio (10 + noisy surcharge) before spatial
-  // onto map observations
-  // first we compute cos & sin for the vehicle's current yaw
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
+  // onto map observations using cached vehicle yaw trigs
+  float cos_y = dozer->cos_yaw;
+  float sin_y = dozer->sin_yaw;
 
   // Observe 100x100 cells (20m x 20m at 0.2m/cell) but downscale 2x2 average -> 50x50 obs.
   const float half_src = 50.0f;
@@ -598,9 +602,9 @@ static inline void update_chassis_pose(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // precalculate trigs and track half-dimensions
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
+  // use cached yaw trigs and precalculate track half-dimensions
+  float cos_y = dozer->cos_yaw;
+  float sin_y = dozer->sin_yaw;
   float half_track_length = dozer->track_length * 0.5f;
   float half_track_gauge = dozer->track_gauge * 0.5f;
 
@@ -729,10 +733,16 @@ static inline void forward_kinematics(SoilEnv* env)
   dozer->_blade_edge_pose[1] = blade_edge_world_pos[1] + chassis_pos[1];
   dozer->_blade_edge_pose[2] = blade_edge_world_pos[2] + chassis_pos[2];
 
-  float q_blade_world[4];
-  quat_multiply(dozer->q, q_blade_local, q_blade_world);
+  quat_multiply(dozer->q, q_blade_local, dozer->q_blade);
+
+  // Precompute blade world unit vectors directly from q_blade
+  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
+  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
+  quat_rotate(dozer->q_blade, x_axis_local, dozer->blade_normal_world);
+  quat_rotate(dozer->q_blade, y_axis_local, dozer->blade_lateral_world);
+
   float rpy_blade[3];
-  quat_to_euler(q_blade_world, rpy_blade);
+  quat_to_euler(dozer->q_blade, rpy_blade);
   dozer->_blade_edge_pose[3] = rpy_blade[0];
   dozer->_blade_edge_pose[4] = rpy_blade[1];
   dozer->_blade_edge_pose[5] = rpy_blade[2];
@@ -747,9 +757,9 @@ static inline void update_kinematics(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
 
-  // precalculate trigs, track dims, and cell area
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
+  // use cached yaw trigs, track dims, and cell area
+  float cos_y = dozer->cos_yaw;
+  float sin_y = dozer->sin_yaw;
 
   float half_track_length = dozer->track_length * 0.5f;
   float half_track_width = dozer->track_width * 0.5f;
@@ -874,7 +884,8 @@ static inline void update_kinematics(SoilEnv* env)
   // here (from stale joint angles) would just be overwritten -- it was redundant work every step.
 }
 
-static inline void update_chassis_velocity(SoilEnv* env, float dt) {
+static inline void update_chassis_velocity(SoilEnv* env, float dt)
+{
   Dozer * dozer = &env->dozer;
 
   // Differential (skid-steer) mixing: a single hydraulic system feeds both tracks, so linear and
@@ -1003,6 +1014,8 @@ static inline void update_chassis_2d_position(SoilEnv* env, float dt)
   dozer->angular_x = rpy[0];
   dozer->angular_y = -rpy[1]; // pitch is negative for nose-up in right-handed coordinates
   dozer->angular_z = rpy[2];
+  dozer->cos_yaw = cosf(dozer->angular_z);
+  dozer->sin_yaw = sinf(dozer->angular_z);
 }
 
 static inline float calculate_FEE_column(SoilEnv* env, float hard_depth, float total_depth, float width)
@@ -1031,20 +1044,10 @@ static inline void interact_with_soil(SoilEnv* env)
   float total_roll_moment = 0.0f;
 
   float half_w = dozer->blade_width / 2.0f;
+  float* x_axis_world = dozer->blade_normal_world;
+  float* y_axis_world = dozer->blade_lateral_world;
 
-  // 1. Get blade orientation quaternion
-  float q_blade[4];
-  euler_to_quat(dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5], q_blade);
-
-  // 2. Compute unit vectors of the blade frame in the world frame
-  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
-  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
-  float x_axis_world[3];
-  float y_axis_world[3];
-  quat_rotate(q_blade, x_axis_local, x_axis_world);
-  quat_rotate(q_blade, y_axis_local, y_axis_world);
-
-  // Find start (left) and end (right) coordinates of the blade in meters
+  // Find start (left) and end (right) coordinates of the blade in meters using precomputed lateral vector
   float start_m_x = dozer->blade_x + y_axis_world[0] * half_w;
   float start_m_y = dozer->blade_y + y_axis_world[1] * half_w;
   float end_m_x = dozer->blade_x - y_axis_world[0] * half_w;
@@ -1333,8 +1336,8 @@ static inline void simulate_erosion(SoilEnv* env, const int num_loops)
   float loader_length = dozer->track_length; // TODO: determine which is better here
   float tan_phi = tanf(env->soil_phi);
   float half_bw = dozer->blade_width * 0.5f;
-  float cos_y = cosf(dozer->angular_z);
-  float sin_y = sinf(dozer->angular_z);
+  float cos_y = dozer->cos_yaw;
+  float sin_y = dozer->sin_yaw;
   float push_sign = dozer->last_push_sign;  // set in interact_with_soil() earlier this step
 
   float temp_L[EROSION_WIN][EROSION_WIN];   // loose-soil snapshot for the blade window
@@ -1543,15 +1546,8 @@ static inline void update_surcharge(SoilEnv* env)
 
   float current_surcharge_vol = 0.0f;
 
-  float q_blade[4];
-  euler_to_quat(dozer->_blade_edge_pose[3], dozer->_blade_edge_pose[4], dozer->_blade_edge_pose[5], q_blade);
-
-  float x_axis_local[3] = {1.0f, 0.0f, 0.0f};
-  float y_axis_local[3] = {0.0f, 1.0f, 0.0f};
-  float x_axis_world[3];
-  float y_axis_world[3];
-  quat_rotate(q_blade, x_axis_local, x_axis_world);
-  quat_rotate(q_blade, y_axis_local, y_axis_world);
+  float* x_axis_world = dozer->blade_normal_world;
+  float* y_axis_world = dozer->blade_lateral_world;
 
   // Normalize x_axis_world and y_axis_world on the XY plane for horizontal distance checks
   float x_len = sqrtf(x_axis_world[0]*x_axis_world[0] + x_axis_world[1]*x_axis_world[1]);
@@ -1640,10 +1636,6 @@ static inline void simulate_step(SoilEnv* env, float dt)
   env->step_num++;
 }
 
-// Build the target heightmap: the starting terrain, minus a cut "slot" and plus a "pile" made of the
-// soil that slot yields. Volume is kept (roughly) consistent across the compact->loose swell, i.e.
-// loose pile volume = swell_ratio * compact slot volume. The pile is a triangular ridge spanning one
-// blade width at the far end of the slot (~1 m tall); the slot is 2.5-5 m long with varied depth.
 static inline void generate_goal_map(SoilEnv* env)
 {
   Dozer* dozer = &env->dozer;
@@ -1675,24 +1667,43 @@ static inline void generate_goal_map(SoilEnv* env)
   // Gaussian pile across pile_width: V = ∫h dA  ->  base length from volume
   float pile_len = (3.0f * pile_volume) / (pile_height * pile_width);
 
-  // Random heading; the slot mouth begins at the dozer and runs outward, pile at the far end.
-  float theta = rand_f(&env->rng) * 2.0f * PI;
-  // float theta = 0;
+
+  // Dozer heading: support either dozer->q or dozer->angular_z
+  float rpy[3];
+  quat_to_euler(dozer->q, rpy);
+  float dozer_yaw = rpy[2];
+  if (fabsf(dozer_yaw) < 1e-6f && fabsf(dozer->angular_z) > 1e-6f)
+  {
+    dozer_yaw = dozer->angular_z;
+    euler_to_quat(dozer->angular_x, -dozer->angular_y, dozer->angular_z, dozer->q);
+  }
+  else
+  {
+    dozer->angular_z = dozer_yaw;
+  }
+  dozer->cos_yaw = cosf(dozer_yaw);
+  dozer->sin_yaw = sinf(dozer_yaw);
+
+  // Slot heading: directly ahead of the dozer, skewed by max 10 deg
+  float max_skew = 10.0f * (PI / 180.0f);
+  float skew = (rand_f(&env->rng) * 2.0f - 1.0f) * max_skew;
+  float theta = dozer_yaw + skew;
   float dir_x = cosf(theta),  dir_y = sinf(theta);
   float perp_x = -dir_y,      perp_y = dir_x;
 
-  env->start_x = rand_f(&env->rng) + 15.0f;
-  env->start_y = rand_f(&env->rng) + 15.0f;
+  // Slot start: [3, 7] meters from the initial position of the vehicle
+  float slot_dist = 3.0f + rand_f(&env->rng) * 4.0f;
+  env->start_x = dozer->position_x + slot_dist * dir_x;
+  env->start_y = dozer->position_y + slot_dist * dir_y;
 
   float start_x = env->start_x;
   float start_y = env->start_y;
 
   float total_len = slot_len + pile_len;
   float half_pile = pile_len * 0.5f;
-  env->goal_pile_x = 0.0f;
-  env->goal_pile_y = 0.0f;
+  env->goal_pile_x = start_x + (slot_len + half_pile) * dir_x;
+  env->goal_pile_y = start_y + (slot_len + half_pile) * dir_y;
 
-  // Gaussian pile: bell-shaped mound with ~30° repose, volume-matched to cut*swell
   // Two-pass to preserve exact volume: first pass sum raw Gaussian, second apply scaled heights
   float sigma_p = pile_len * 0.25f; // along-pile std (≈ pile_len/4 gives ~30° side slope)
   float sigma_v = half_pile_w * 0.5f;    // across-pile std (≈ pile_width/4)
@@ -1843,17 +1854,53 @@ static inline void env_reset(SoilEnv* env)
   dozer->vel_blade_roll = 0.0f;         // Current relative roll velocity (rad/s)
   dozer->vel_blade_yaw = 0.0f;          // Current relative yaw velocity (rad/s)
 
-  // dozer->position_x = (GRID_SIZE * CELL_SIZE) / 2.0f - 10.0f;
-  // dozer->position_y = (GRID_SIZE * CELL_SIZE) / 2.0f;
+  // Spawn vehicle [1, 5] meters from a map edge, pointing towards map center (+- 10 deg)
+  float map_width = GRID_SIZE * CELL_SIZE;
+  float center_x = map_width * 0.5f;
+  float center_y = map_width * 0.5f;
 
-  dozer->position_x = 5.0f + rand_f(&env->rng)*10.0f;
-  dozer->position_y = 5.0f + rand_f(&env->rng)*10.0f;
+  int edge = (int)(rand_f(&env->rng) * 4.0f);
+  if (edge > 3) edge = 3;
+  float dist_from_edge = 3.0f + rand_f(&env->rng) * 4.0f; // [3.0, 7.0] m
+  float pos_along_edge = 3.0f + rand_f(&env->rng) * (map_width - 2.0f); // [3.0, map_width - 1.0] m
+
+  if (edge == 0) // West edge (X near 0)
+  {
+    dozer->position_x = dist_from_edge;
+    dozer->position_y = pos_along_edge;
+  }
+  else if (edge == 1) // East edge (X near map_width)
+  {
+    dozer->position_x = map_width - dist_from_edge;
+    dozer->position_y = pos_along_edge;
+  }
+  else if (edge == 2) // South edge (Y near 0)
+  {
+    dozer->position_x = pos_along_edge;
+    dozer->position_y = dist_from_edge;
+  }
+  else // North edge (Y near map_width)
+  {
+    dozer->position_x = pos_along_edge;
+    dozer->position_y = map_width - dist_from_edge;
+  }
   dozer->position_z = 1.0f;
 
-  dozer->q[0] = 1.0f;
-  dozer->q[1] = 0.0f;
-  dozer->q[2] = 0.0f;
-  dozer->q[3] = 0.0f;
+  // Aim towards map center with max +- 10 deg skew
+  float dx_center = center_x - dozer->position_x;
+  float dy_center = center_y - dozer->position_y;
+  float angle_to_center = atan2f(dy_center, dx_center);
+
+  float max_yaw_skew = 10.0f * (PI / 180.0f);
+  float yaw_skew = (rand_f(&env->rng) * 2.0f - 1.0f) * max_yaw_skew;
+  float init_yaw = angle_to_center + yaw_skew;
+
+  dozer->angular_x = 0.0f;
+  dozer->angular_y = 0.0f;
+  dozer->angular_z = init_yaw;
+  dozer->cos_yaw = cosf(init_yaw);
+  dozer->sin_yaw = sinf(init_yaw);
+  euler_to_quat(0.0f, 0.0f, init_yaw, dozer->q);
 
   dozer->last_push_sign = 1.0f;  // default to forward until motion/effort says otherwise
 
@@ -1937,9 +1984,7 @@ void c_step(SoilEnv* env)
   env->terminals[0] = 0;  // zero these guys just in case
   env->rewards[0]   = 0;  // zero these guys just in case
 
-  // Single physics step per control action (no top-level sub-stepping for now).
   // Soil erosion still sub-loops internally (see simulate_erosion, num_loops=3).
-  // Revisit if the main loop proves unstable once we run/test the sim.
   simulate_step(env, 0.02);
 
   // get observations (rewards and terminals also seen here, since we're already doing some loops!)
@@ -1951,6 +1996,9 @@ void c_step(SoilEnv* env)
 
 #include "raylib_render.h"
 
+// Visual forward kinematics: computes intermediate joint poses (_lift_arm_joint_pose,
+// _pitch_joint_pose, _u_joint_pose) strictly for Raylib 3D rendering.
+// This is ONLY called inside c_render() and is completely skipped during headless training.
 static inline void forward_kinematics_visual(SoilEnv* env)
 {
   Dozer * dozer = &env->dozer;
